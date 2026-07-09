@@ -490,6 +490,19 @@ module tb_hci
     .n_read_complete_hwpe_o(N_READ_COMPLETE_TRANSACTIONS_HWPE)
   );
 
+  if (INTERCO_TYPE == HCI) begin : gen_functional_scoreboard_monitor
+    functional_scoreboard_monitor #(
+      .N_MASTER(N_DRIVERS),
+      .N_HWPE(N_HWPE)
+    ) i_functional_scoreboard_monitor (
+      .clk_i(clk),
+      .rst_ni(rst_n),
+      .end_resp_i(s_end_resp),
+      .hci_driver_log_if(hci_driver_log_if),
+      .hci_driver_hwpe_if(hci_driver_hwpe_if)
+    );
+  end
+
   ///////////////
   // Reporting //
   ///////////////
