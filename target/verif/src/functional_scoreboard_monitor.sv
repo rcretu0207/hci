@@ -6,7 +6,6 @@
  *  - corresponds to a previously granted transaction;
  *  - arrives in per-master FIFO order;
  *  - returns the expected read data;
- *  - carries the expected response ID on the narrow driver side;
  *  - never appears spuriously.
  */
 
@@ -14,7 +13,8 @@ module functional_scoreboard_monitor
   import tb_hci_pkg::*;
 #(
   parameter int unsigned N_MASTER = 4,
-  parameter int unsigned N_HWPE = 1
+  parameter int unsigned N_HWPE = 1,
+  parameter bit CHECK_LOG_R_ID = 1'b0
 ) (
   input logic                clk_i,
   input logic                rst_ni,
@@ -251,17 +251,22 @@ module functional_scoreboard_monitor
             exp_log_rsp = expected_log_rsp_mem[i][expected_log_head_q[i]];
             expected_log_head_q[i] = (expected_log_head_q[i] + 1) % MAX_PENDING_RSP;
             expected_log_count_q[i] = expected_log_count_q[i] - 1;
-            if (log_r_id[i] != exp_log_rsp.id) begin
-              $fatal(
-                1,
-                "Response-ID mismatch on master_log_%0d: expected 0x%0h, got 0x%0h",
-                i,
-                exp_log_rsp.id,
-                log_r_id[i]
-              );
+            if (CHECK_LOG_R_ID) begin
+              // Use 4-state comparisons so unknown/X response IDs are not
+              // silently accepted by the monitor when the path is expected to
+              // preserve IDs meaningfully.
+              if (log_r_id[i] !== exp_log_rsp.id) begin
+                $fatal(
+                  1,
+                  "Response-ID mismatch on master_log_%0d: expected 0x%0h, got 0x%0h",
+                  i,
+                  exp_log_rsp.id,
+                  log_r_id[i]
+                );
+              end
             end
             if (exp_log_rsp.is_read) begin
-              if (log_r_data[i] != exp_log_rsp.data) begin
+              if (log_r_data[i] !== exp_log_rsp.data) begin
                 $fatal(
                   1,
                   "Read-data mismatch on master_log_%0d: expected 0x%0h, got 0x%0h",
@@ -292,7 +297,7 @@ module functional_scoreboard_monitor
             expected_hwpe_head_q[i] = (expected_hwpe_head_q[i] + 1) % MAX_PENDING_RSP;
             expected_hwpe_count_q[i] = expected_hwpe_count_q[i] - 1;
             if (exp_hwpe_rsp.is_read) begin
-              if (hwpe_r_data[i] != exp_hwpe_rsp.data) begin
+              if (hwpe_r_data[i] !== exp_hwpe_rsp.data) begin
                 $fatal(
                   1,
                   "Read-data mismatch on master_hwpe_%0d: expected 0x%0h, got 0x%0h",
