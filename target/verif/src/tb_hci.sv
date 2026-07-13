@@ -503,6 +503,19 @@ module tb_hci
     );
   end
 
+  if (INTERCO_TYPE == HCI && N_WIDE_HCI > 0) begin : gen_qos_monitor
+    qos_monitor #(
+      .N_BANKS(N_BANKS)
+    ) i_qos_monitor (
+      .clk_i(clk),
+      .rst_ni(rst_n),
+      .ctrl_i(s_hci_ctrl),
+      .narrow_bank_if(i_hci_interconnect.all_except_hwpe_mem),
+      .wide_bank_if(i_hci_interconnect.hwpe_mem_muxed),
+      .mem_bank_if(hci_target_mems)
+    );
+  end
+
   ///////////////
   // Reporting //
   ///////////////

@@ -83,6 +83,7 @@ sources:
           - target/verif/src/bandwidth_monitor.sv
           # Level 2
           - target/verif/src/functional_scoreboard_monitor.sv
+          - target/verif/src/qos_monitor.sv
           - target/verif/src/simulation_report.sv
           # Level 3
           - target/verif/src/tb_hci.sv
