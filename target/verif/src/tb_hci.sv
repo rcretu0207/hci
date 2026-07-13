@@ -503,6 +503,19 @@ module tb_hci
     );
   end
 
+  if (INTERCO_TYPE == HCI) begin : gen_response_legality_monitor
+    response_legality_monitor #(
+      .N_MASTER(N_DRIVERS),
+      .N_HWPE(N_HWPE)
+    ) i_response_legality_monitor (
+      .clk_i(clk),
+      .rst_ni(rst_n),
+      .end_resp_i(s_end_resp),
+      .hci_driver_log_if(hci_driver_log_if),
+      .hci_driver_hwpe_if(hci_driver_hwpe_if)
+    );
+  end
+
   if (INTERCO_TYPE == HCI && N_WIDE_HCI > 0) begin : gen_qos_monitor
     qos_monitor #(
       .N_BANKS(N_BANKS)
