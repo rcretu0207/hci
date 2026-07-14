@@ -22,17 +22,18 @@
  * fundamental IPs.
  *
  * Fundamentally, a source streamer acts as a specialized DMA engine acting
- * out a predefined pattern from an **hwpe_stream_addressgen_v3** to perform
+ * out a predefined pattern from an **hwpe_stream_addressgen_v4** to perform
  * a burst of loads via a HCI-Core interface, producing a HWPE-Stream
  * data stream from the HCI-Core `r_data` field.
  * By default, the HCI-Core streamer supports delayed accesses using a HCI-Core 
  * interface.
  *
- * Misaligned accesses are supported by widening the HCI-Core data width of 32
- * bits compared to the HWPE-Stream that gets produced by the streamer.
- * Unused bytes are simply ignored. This feature can be deactivated by unsetting
- * the `MISALIGNED_ACCESS` parameter; in this case, the sink will
- * only work correctly if all data is aligned to a word boundary.
+ * Misaligned accesses are supported by widening the HCI-Core data width by one
+ * memory-bank data width (`BANK_DATA_WIDTH = ELEMENT_WIDTH * ELEMENTS_PER_BANK`,
+ * 32 bits by default) compared to the HWPE-Stream that gets produced by the
+ * streamer. Unused bytes are simply ignored. This feature can be deactivated by
+ * unsetting the `MISALIGNED_ACCESSES` parameter; in this case, the source will
+ * only work correctly if all data is aligned to a bank-word boundary.
  *
  * In principle, the source streamer is insensitive to latency.
  * However, when configured to support misaligned memory accesses, the address FIFO
@@ -43,21 +44,27 @@
  * .. _hci_core_source_params:
  * .. table:: **hci_core_source** design-time parameters.
  *
- *   +---------------------+-------------+--------------------------------------------------------------------------------------------------------------------------+
- *   | **Name**            | **Default** | **Description**                                                                                                          |
- *   +---------------------+-------------+--------------------------------------------------------------------------------------------------------------------------+
- *   | *LATCH_FIFO*        | 0           | If 1, use latches instead of flip-flops (requires special constraints in synthesis).                                     |
- *   +---------------------+-------------+--------------------------------------------------------------------------------------------------------------------------+
- *   | *TRANS_CNT*         | 16          | Number of bits supported in the transaction counter of the address generator, which will overflow at 2^ `TRANS_CNT`.     |
- *   +---------------------+-------------+--------------------------------------------------------------------------------------------------------------------------+
- *   | *ADDR_MIS_DEPTH*    | 8           | Depth of the misaligned address FIFO. This **must** be equal to the max-latency between the HCI-Core `gnt` and `r_valid`.|
- *   +---------------------+-------------+--------------------------------------------------------------------------------------------------------------------------+
- *   | *MISALIGNED_ACCESS* | 1           | If set to 0, the source will not support non-word-aligned HCI-Core accesses.                                             |
- *   +---------------------+-------------+--------------------------------------------------------------------------------------------------------------------------+
- *   | *PASSTHROUGH_FIFO*  | 0           | If set to 1, the address FIFO will be capable of fall-through operation (i.e., skipping the FIFO latency entirely).      |
- *   +---------------------+-------------+--------------------------------------------------------------------------------------------------------------------------+
- *   | *RESP_FIFO_DEPTH*   | 0           | If > 0, responses are buffered through a HWPE-Stream FIFO of this depth before reaching the output stream.               |
- *   +---------------------+-------------+--------------------------------------------------------------------------------------------------------------------------+
+ *   +-----------------------+-------------+--------------------------------------------------------------------------------------------------------------------------+
+ *   | **Name**              | **Default** | **Description**                                                                                                          |
+ *   +-----------------------+-------------+--------------------------------------------------------------------------------------------------------------------------+
+ *   | *LATCH_FIFO*          | 0           | If 1, use latches instead of flip-flops (requires special constraints in synthesis).                                     |
+ *   +-----------------------+-------------+--------------------------------------------------------------------------------------------------------------------------+
+ *   | *TRANS_CNT*           | 16          | Number of bits supported in the transaction counter of the address generator, which will overflow at 2^ `TRANS_CNT`.     |
+ *   +-----------------------+-------------+--------------------------------------------------------------------------------------------------------------------------+
+ *   | *ADDR_MIS_DEPTH*      | 8           | Depth of the misaligned address FIFO. This **must** be equal to the max-latency between the HCI-Core `gnt` and `r_valid`.|
+ *   +-----------------------+-------------+--------------------------------------------------------------------------------------------------------------------------+
+ *   | *MISALIGNED_ACCESSES* | 1           | If set to 0, the source will not support non-bank-word-aligned HCI-Core accesses.                                        |
+ *   +-----------------------+-------------+--------------------------------------------------------------------------------------------------------------------------+
+ *   | *PASSTHROUGH_FIFO*    | 0           | If set to 1, the address FIFO will be capable of fall-through operation (i.e., skipping the FIFO latency entirely).      |
+ *   +-----------------------+-------------+--------------------------------------------------------------------------------------------------------------------------+
+ *   | *RESP_FIFO_DEPTH*     | 0           | If > 0, responses are buffered through a HWPE-Stream FIFO of this depth before reaching the output stream.               |
+ *   +-----------------------+-------------+--------------------------------------------------------------------------------------------------------------------------+
+ *   | *ELEMENT_WIDTH*       | 8           | Bit-width of a single data element; with `ELEMENTS_PER_BANK` it sets the bank data width.                                |
+ *   +-----------------------+-------------+--------------------------------------------------------------------------------------------------------------------------+
+ *   | *ELEMENTS_PER_BANK*   | 4           | Number of elements stored in one memory bank; sets the bank data width.                                                  |
+ *   +-----------------------+-------------+--------------------------------------------------------------------------------------------------------------------------+
+ *   | *DIM_ENABLE_1H*       | 4'b0011     | Bit-mask selecting how many address-generator dimensions are enabled (see **hwpe_stream_addressgen_v4**).                |
+ *   +-----------------------+-------------+--------------------------------------------------------------------------------------------------------------------------+
  *
  * .. tabularcolumns:: |l|l|J|
  * .. _hci_core_source_ctrl:
@@ -68,22 +75,22 @@
  *   +-------------------+------------------------+----------------------------------------------------------------------------+
  *   | *req_start*       | `logic`                | When 1, the source streamer operation is started if it is ready.           |
  *   +-------------------+------------------------+----------------------------------------------------------------------------+
- *   | *addressgen_ctrl* | `ctrl_addressgen_v3_t` | Configuration of the address generator (see **hwpe_stream_addresgen_v3**). |
+ *   | *addressgen_ctrl* | `ctrl_addressgen_v4_t` | Configuration of the address generator (see **hwpe_stream_addressgen_v4**).|
  *   +-------------------+------------------------+----------------------------------------------------------------------------+
  *
  * .. tabularcolumns:: |l|l|J|
  * .. _hci_core_source_flags:
  * .. table:: **hci_core_source** output flags.
  *
- *   +--------------------+------------------------+-----------------------------------------------------------------------------------------------+
- *   | **Name**           | **Type**               | **Description**                                                                               |
- *   +--------------------+------------------------+-----------------------------------------------------------------------------------------------+
- *   | *ready_start*      | `logic`                | 1 when the source streamer is ready to start operation, from the first IDLE state cycle on.   |
- *   +--------------------+------------------------+-----------------------------------------------------------------------------------------------+
- *   | *done*             | `logic`                | 1 for one cycle when the streamer ends operation, in the cycle before it goes to IDLE state . |
- *   +--------------------+------------------------+-----------------------------------------------------------------------------------------------+
- *   | *addressgen_flags* | `flags_addressgen_v3_t`| Address generator flags (see **hwpe_stream_addresgen_v3**).                                   |
- *   +--------------------+------------------------+-----------------------------------------------------------------------------------------------+
+ *   +----------------------+------------------------+-----------------------------------------------------------------------------------------------+
+ *   | **Name**             | **Type**               | **Description**                                                                               |
+ *   +----------------------+------------------------+-----------------------------------------------------------------------------------------------+
+ *   | *ready_start*        | `logic`                | 1 when the source streamer is ready to start operation, from the first IDLE state cycle on.   |
+ *   +----------------------+------------------------+-----------------------------------------------------------------------------------------------+
+ *   | *done*               | `logic`                | 1 for one cycle when the streamer ends operation, in the cycle before it goes to IDLE state . |
+ *   +----------------------+------------------------+-----------------------------------------------------------------------------------------------+
+ *   | *addressgen_flags*   | `flags_addressgen_v4_t`| Address generator flags (see **hwpe_stream_addressgen_v4**).                                  |
+ *   +----------------------+------------------------+-----------------------------------------------------------------------------------------------+
  *
  */
 
@@ -94,14 +101,18 @@ module hci_core_source
   import hci_package::*;
 #(
   // Stream interface params
-  parameter int unsigned LATCH_FIFO  = 0,
-  parameter int unsigned TRANS_CNT = 16,
-  parameter int unsigned ADDR_MIS_DEPTH = 8, // Beware: this must be >= the maximum latency between TCDM gnt and TCDM r_valid!!!
-  parameter int unsigned MISALIGNED_ACCESSES = 1,
-  parameter int unsigned PASSTHROUGH_FIFO = 0,
-  parameter int unsigned RESP_FIFO_DEPTH = 0,
-  parameter hci_size_parameter_t `HCI_SIZE_PARAM(tcdm) = '0,
-  parameter bit [2:0] DIM_ENABLE_1H = 3'b011 // Number of dimensions enabled in the address generator
+  parameter int unsigned LATCH_FIFO           = 0,
+  parameter int unsigned TRANS_CNT            = 16,
+  parameter int unsigned ADDR_MIS_DEPTH       = 8, // Beware: this must be >= the maximum latency between TCDM gnt and TCDM r_valid!!!
+  parameter int unsigned MISALIGNED_ACCESSES  = 1,
+  parameter int unsigned PASSTHROUGH_FIFO     = 0,
+  parameter int unsigned RESP_FIFO_DEPTH      = 0,
+  parameter int unsigned ELEMENT_WIDTH        = 8,  // e.g., 8 bits per element
+  parameter int unsigned ELEMENTS_PER_BANK    = 4,  // number of elements in one memory bank
+  localparam int unsigned BANK_DATA_WIDTH     = ELEMENT_WIDTH * ELEMENTS_PER_BANK,
+  localparam int unsigned ADDR_OFFSET         = ELEMENTS_PER_BANK == 1 ? 1 : $clog2(ELEMENTS_PER_BANK),
+  parameter bit [3:0] DIM_ENABLE_1H           = 4'b0011, // Number of dimensions enabled in the address generator
+  parameter hci_size_parameter_t `HCI_SIZE_PARAM(tcdm) = '0
 )
 (
   input logic clk_i,
@@ -120,6 +131,7 @@ module hci_core_source
 
   localparam int unsigned DATA_WIDTH = `HCI_SIZE_GET_DW(tcdm);
   localparam int unsigned EHW        = `HCI_SIZE_GET_EHW(tcdm);
+  localparam int unsigned STREAM_MISALIGNED_DW = DATA_WIDTH - BANK_DATA_WIDTH;
 
   hci_streamer_state_t cs, ns;
   flags_fifo_t addr_fifo_flags;
@@ -141,7 +153,7 @@ module hci_core_source
   );
 
   // generate addresses
-  hwpe_stream_addressgen_v3 #(
+  hwpe_stream_addressgen_v4 #(
     .DIM_ENABLE_1H ( DIM_ENABLE_1H )
   ) i_addressgen (
     .clk_i       ( clk_i                    ),
@@ -183,8 +195,7 @@ module hci_core_source
 
   logic                  stream_valid_q;
   logic [DATA_WIDTH-1:0] stream_data_q;
-  logic [1:0]            addr_misaligned_q;
-  logic                  addr_misaligned_valid;
+  logic [ADDR_OFFSET-1:0]addr_misaligned_q;
   logic [DATA_WIDTH-1:0] stream_data_misaligned;
   logic [DATA_WIDTH-1:0] stream_data_aligned;
 
@@ -194,44 +205,42 @@ module hci_core_source
   // this is simply exploiting the fact that we can make a wider data access than strictly necessary!
   assign stream_data_misaligned = tcdm.r_valid ? tcdm.r_data : stream_data_q; // is this strictly necessary to keep the HWPE-Stream protocol? or can be avoided with a FIFO q?
 
-  if (MISALIGNED_ACCESSES==1 ) begin : missaligned_access_gen
+  // hwpe stream is a factor of 8 hardcoded. Until this is fixed have to use this
+  localparam int unsigned ADDR_OFFSET_BYTE = 8*((ADDR_OFFSET + 8 - 1) / 8);
+
+  if (MISALIGNED_ACCESSES==1) begin : misaligned_access_gen
     always_comb
     begin
       stream_data_aligned = '0;
-      case(addr_misaligned_q)
-        2'b00: begin
-          stream_data_aligned[DATA_WIDTH-1:0] = stream_data_misaligned[DATA_WIDTH-1:0];
-        end
-        2'b01: begin
-          stream_data_aligned[DATA_WIDTH-32-1:0] = stream_data_misaligned[DATA_WIDTH-24-1:8];
-        end
-        2'b10: begin
-          stream_data_aligned[DATA_WIDTH-32-1:0] = stream_data_misaligned[DATA_WIDTH-16-1:16];
-        end
-        2'b11: begin
-          stream_data_aligned[DATA_WIDTH-32-1:0] = stream_data_misaligned[DATA_WIDTH-8-1:24];
-        end
-      endcase
+      if (addr_misaligned_q == 0) begin
+        stream_data_aligned[DATA_WIDTH-1:0] = stream_data_misaligned[DATA_WIDTH-1:0];
+      end
+      else begin
+        stream_data_aligned[STREAM_MISALIGNED_DW-1:0] = stream_data_misaligned[addr_misaligned_q*ELEMENT_WIDTH +: STREAM_MISALIGNED_DW];
+      end
     end
 
     hwpe_stream_intf_stream #(
-      .DATA_WIDTH ( 8 ) // only 2 significant
+      .DATA_WIDTH ( ADDR_OFFSET_BYTE ) // only 2 significant
     ) addr_misaligned_push (
       .clk ( clk_i )
     );
     hwpe_stream_intf_stream #(
-      .DATA_WIDTH ( 8 ) // only 2 significant
+      .DATA_WIDTH ( ADDR_OFFSET_BYTE ) // only 2 significant
     ) addr_misaligned_pop (
       .clk ( clk_i )
     );
-    assign addr_misaligned_push.data  = {6'b0, addr_pop.data[1:0]};
+    if(ADDR_OFFSET_BYTE == ADDR_OFFSET)
+      assign addr_misaligned_push.data  = addr_pop.data[ADDR_OFFSET-1:0];
+    else
+      assign addr_misaligned_push.data  = {{(ADDR_OFFSET_BYTE-ADDR_OFFSET){1'b0}}, addr_pop.data[ADDR_OFFSET-1:0]};
     assign addr_misaligned_push.strb  = '1;
-    assign addr_misaligned_push.valid = enable_i & tcdm.gnt; // BEWARE: considered always ready!!!
+    assign addr_misaligned_push.valid = enable_i & tcdm.req & tcdm.gnt; // check full handshake (req&gnt): hci_core_fifo plugs gnt to a ready, therefore gnt's may be asserted without a related req. BEWARE: pop considered always ready!!!
     assign addr_misaligned_pop.ready  = (tcdm.r_valid | stream_valid_q) & resp_push.ready;
-    assign addr_misaligned_q = addr_misaligned_pop.data[1:0];
+    assign addr_misaligned_q = addr_misaligned_pop.data[ADDR_OFFSET-1:0];
 
     hwpe_stream_fifo #(
-      .DATA_WIDTH ( 8              ), // only [1:0] significant
+      .DATA_WIDTH ( ADDR_OFFSET_BYTE), // only [1:0] significant
       .FIFO_DEPTH ( ADDR_MIS_DEPTH )
     ) i_addr_misaligned_fifo (
       .clk_i   ( clk_i                ),
@@ -260,9 +269,12 @@ module hci_core_source
   );
 
   assign tcdm.req        = (cs != STREAMER_IDLE) ? addr_pop.valid : '0;
-  assign tcdm.add        = (cs != STREAMER_IDLE) ? {addr_pop.data[31:2],2'b0}    : '0;
+  if(ADDR_OFFSET == 1)
+    assign tcdm.add        = (cs != STREAMER_IDLE) ? addr_pop.data[31:0] : '0;
+  else
+    assign tcdm.add        = (cs != STREAMER_IDLE) ? {addr_pop.data[31:ADDR_OFFSET],{ADDR_OFFSET{1'b0}}} : '0;
   assign tcdm.wen        = 1'b1;
-  assign tcdm.be         = 4'h0;
+  assign tcdm.be         = {ELEMENTS_PER_BANK{1'b0}};
   assign tcdm.data       = '0;
   assign tcdm.user       = '0;
   assign tcdm.id         = '0;
