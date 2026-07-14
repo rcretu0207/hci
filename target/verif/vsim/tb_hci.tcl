@@ -195,5 +195,8 @@ if {$GUI == 1} {
 
     configure wave -signalnamewidth 1
 } else {
-    run -a
+    onerror {quit -code 1}
+    onbreak {quit -code 1}
+    run -all
+    quit -code 0
 }

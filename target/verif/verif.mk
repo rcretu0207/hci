@@ -141,7 +141,8 @@ run-verif: $(HCI_VERIF_DIR)/vsim/$(sim_top_level).tcl $(sim_vsim_lib)/$(sim_top_
 	cd $(HCI_VERIF_DIR)/vsim && \
 	$(SIM_VSIM) $(SIM_HCI_VSIM_ARGS) \
 	$(sim_top_level)_optimized \
-	-do 'set GUI $(GUI); source $<'
+	-do 'set GUI $(GUI); source $<' && \
+	grep -Eq '^# Errors: 0,' $(HCI_VERIF_DIR)/vsim/transcript
 
 
 .PHONY: clean-verif
