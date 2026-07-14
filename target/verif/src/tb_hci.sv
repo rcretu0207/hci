@@ -497,7 +497,6 @@ module tb_hci
     ) i_functional_scoreboard_monitor (
       .clk_i(clk),
       .rst_ni(rst_n),
-      .end_resp_i(s_end_resp),
       .hci_driver_log_if(hci_driver_log_if),
       .hci_driver_hwpe_if(hci_driver_hwpe_if)
     );
