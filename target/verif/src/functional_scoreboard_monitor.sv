@@ -4,7 +4,8 @@
  * Tracks architectural memory contents from granted driver transactions in
  * HCI mode and checks that each completed response:
  *  - corresponds to a previously granted transaction;
- *  - arrives in per-master FIFO order;
+ *  - matches the oldest pending transaction, with ordering observed through
+ *    the returned read payload when responses are otherwise indistinguishable;
  *  - returns the expected read data;
  *  - never appears spuriously.
  */
@@ -13,7 +14,10 @@ module functional_scoreboard_monitor
   import tb_hci_pkg::*;
 #(
   parameter int unsigned N_MASTER = 4,
-  parameter int unsigned N_HWPE = 1
+  parameter int unsigned N_HWPE = 1,
+  // Driver-side grants coincide with memory-side acceptance only without the
+  // optional wide-router request FIFO.
+  parameter int unsigned ROUTER_FIFO_DEPTH = 0
 ) (
   input logic                clk_i,
   input logic                rst_ni,
@@ -26,8 +30,7 @@ module functional_scoreboard_monitor
   localparam int unsigned HWPE_WORD_BYTES = HWPE_WIDTH_FACT * WORD_BYTES;
   localparam int unsigned MEM_BYTES = TOT_MEM_SIZE * 1024;
   typedef struct packed {
-    logic                 is_read;
-    logic [IW_cores-1:0]  id;
+    logic                  is_read;
     logic [DATA_WIDTH-1:0] data;
   } expected_log_rsp_t;
 
@@ -41,8 +44,6 @@ module functional_scoreboard_monitor
   logic log_r_valid[N_LOG_MASTERS];
   logic log_r_ready[N_LOG_MASTERS];
   logic log_wen[N_LOG_MASTERS];
-  logic [IW_cores-1:0] log_id[N_LOG_MASTERS];
-  logic [IW_cores-1:0] log_r_id[N_LOG_MASTERS];
   logic [ADDR_WIDTH-1:0] log_add[N_LOG_MASTERS];
   logic [DATA_WIDTH-1:0] log_data[N_LOG_MASTERS];
   logic [DATA_WIDTH-1:0] log_r_data[N_LOG_MASTERS];
@@ -53,13 +54,13 @@ module functional_scoreboard_monitor
   logic hwpe_r_valid[N_HWPE];
   logic hwpe_r_ready[N_HWPE];
   logic hwpe_wen[N_HWPE];
-  logic [IW_hwpe-1:0] hwpe_r_id[N_HWPE];
   logic [ADDR_WIDTH-1:0] hwpe_add[N_HWPE];
   logic [HWPE_WIDTH_FACT*DATA_WIDTH-1:0] hwpe_data[N_HWPE];
   logic [HWPE_WIDTH_FACT*DATA_WIDTH-1:0] hwpe_r_data[N_HWPE];
   logic [HWPE_WORD_BYTES-1:0] hwpe_be[N_HWPE];
 
   byte unsigned mem_model [0:MEM_BYTES-1];
+  bit failure_seen_q;
 
   function automatic logic hwpe_rsp_expected(
     input int unsigned master_idx_i,
@@ -76,6 +77,7 @@ module functional_scoreboard_monitor
     begin
       base_addr = int'(addr_i);
       if (base_addr + WORD_BYTES > MEM_BYTES) begin
+        failure_seen_q = 1'b1;
         $fatal(1, "Scoreboard memory read out of bounds at byte address 0x%0h.", addr_i);
       end
       for (int byte_idx = 0; byte_idx < WORD_BYTES; byte_idx++) begin
@@ -109,6 +111,7 @@ module functional_scoreboard_monitor
     begin
       base_addr = int'(addr_i);
       if (base_addr + WORD_BYTES > MEM_BYTES) begin
+        failure_seen_q = 1'b1;
         $fatal(1, "Scoreboard memory write out of bounds at byte address 0x%0h.", addr_i);
       end
       for (int byte_idx = 0; byte_idx < WORD_BYTES; byte_idx++) begin
@@ -138,6 +141,15 @@ module functional_scoreboard_monitor
   endtask
 
   initial begin
+    failure_seen_q = 1'b0;
+    if (ROUTER_FIFO_DEPTH != 0) begin
+      failure_seen_q = 1'b1;
+      $fatal(
+        1,
+        "functional_scoreboard_monitor requires ROUTER_FIFO_DEPTH=0; got %0d.",
+        ROUTER_FIFO_DEPTH
+      );
+    end
     for (int byte_idx = 0; byte_idx < MEM_BYTES; byte_idx++) begin
       mem_model[byte_idx] = 8'hff;
     end
@@ -150,8 +162,6 @@ module functional_scoreboard_monitor
       assign log_r_valid[ii] = hci_driver_log_if[ii].r_valid;
       assign log_r_ready[ii] = hci_driver_log_if[ii].r_ready;
       assign log_wen[ii] = hci_driver_log_if[ii].wen;
-      assign log_id[ii] = hci_driver_log_if[ii].id[IW_cores-1:0];
-      assign log_r_id[ii] = hci_driver_log_if[ii].r_id[IW_cores-1:0];
       assign log_add[ii] = hci_driver_log_if[ii].add[ADDR_WIDTH-1:0];
       assign log_data[ii] = hci_driver_log_if[ii].data;
       assign log_r_data[ii] = hci_driver_log_if[ii].r_data;
@@ -164,7 +174,6 @@ module functional_scoreboard_monitor
       assign hwpe_r_valid[ii] = hci_driver_hwpe_if[ii].r_valid;
       assign hwpe_r_ready[ii] = hci_driver_hwpe_if[ii].r_ready;
       assign hwpe_wen[ii] = hci_driver_hwpe_if[ii].wen;
-      assign hwpe_r_id[ii] = hci_driver_hwpe_if[ii].r_id[IW_hwpe-1:0];
       assign hwpe_add[ii] = hci_driver_hwpe_if[ii].add[ADDR_WIDTH-1:0];
       assign hwpe_data[ii] = hci_driver_hwpe_if[ii].data;
       assign hwpe_r_data[ii] = hci_driver_hwpe_if[ii].r_data;
@@ -185,6 +194,7 @@ module functional_scoreboard_monitor
     expected_hwpe_rsp_t exp_hwpe_rsp;
     expected_hwpe_rsp_t new_hwpe_rsp;
     if (!rst_ni) begin
+      failure_seen_q = 1'b0;
       for (int ii = 0; ii < N_LOG_MASTERS; ii++) begin
         expected_log_rsp_q[ii].delete();
         debug_log_gnt_count_q[ii] = '0;
@@ -196,15 +206,72 @@ module functional_scoreboard_monitor
         debug_hwpe_rsp_count_q[ii] = '0;
       end
     end else begin
-      // Phase 1: capture all newly granted transactions against the pre-write
-      // memory image of this cycle. Grants are enqueued before responses are
-      // retired so the monitor handles any path that can expose a new grant and
-      // a completed response in the same clock cycle at the driver-facing side.
+      // Phase 1: retire responses only from transactions that were already
+      // pending before this edge. A new grant cannot justify a response on the
+      // same edge.
+      for (int ii = 0; ii < N_LOG_MASTERS; ii++) begin
+        if (log_r_valid[ii] && log_r_ready[ii]) begin
+          debug_log_rsp_count_q[ii] = debug_log_rsp_count_q[ii] + 1;
+          if (expected_log_rsp_q[ii].size() == 0) begin
+            failure_seen_q = 1'b1;
+            $fatal(
+              1,
+              "Spurious response on master_log_%0d: r_data=0x%0h gnt_count=%0d rsp_count=%0d",
+              ii,
+              log_r_data[ii],
+              debug_log_gnt_count_q[ii],
+              debug_log_rsp_count_q[ii]
+            );
+          end else begin
+            exp_log_rsp = expected_log_rsp_q[ii].pop_front();
+            if (exp_log_rsp.is_read && (log_r_data[ii] !== exp_log_rsp.data)) begin
+              failure_seen_q = 1'b1;
+              $fatal(
+                1,
+                "Read-data mismatch on master_log_%0d: expected 0x%0h, got 0x%0h",
+                ii,
+                exp_log_rsp.data,
+                log_r_data[ii]
+              );
+            end
+          end
+        end
+      end
+
+      for (int ii = 0; ii < N_HWPE; ii++) begin
+        if (hwpe_r_valid[ii] && hwpe_r_ready[ii]) begin
+          debug_hwpe_rsp_count_q[ii] = debug_hwpe_rsp_count_q[ii] + 1;
+          if (expected_hwpe_rsp_q[ii].size() == 0) begin
+            failure_seen_q = 1'b1;
+            $fatal(
+              1,
+              "Spurious response on master_hwpe_%0d: gnt_count=%0d rsp_count=%0d",
+              ii,
+              debug_hwpe_gnt_count_q[ii],
+              debug_hwpe_rsp_count_q[ii]
+            );
+          end else begin
+            exp_hwpe_rsp = expected_hwpe_rsp_q[ii].pop_front();
+            if (exp_hwpe_rsp.is_read && (hwpe_r_data[ii] !== exp_hwpe_rsp.data)) begin
+              failure_seen_q = 1'b1;
+              $fatal(
+                1,
+                "Read-data mismatch on master_hwpe_%0d: expected 0x%0h, got 0x%0h",
+                ii,
+                exp_hwpe_rsp.data,
+                hwpe_r_data[ii]
+              );
+            end
+          end
+        end
+      end
+
+      // Phase 2: capture newly granted transactions against this cycle's
+      // pre-write memory image.
       for (int ii = 0; ii < N_LOG_MASTERS; ii++) begin
         if (log_req[ii] && log_gnt[ii]) begin
           debug_log_gnt_count_q[ii] = debug_log_gnt_count_q[ii] + 1;
           new_log_rsp.is_read = log_wen[ii];
-          new_log_rsp.id = log_id[ii];
           new_log_rsp.data = log_wen[ii] ? read_word_from_model(log_add[ii]) : '0;
           expected_log_rsp_q[ii].push_back(new_log_rsp);
         end
@@ -217,67 +284,6 @@ module functional_scoreboard_monitor
             new_hwpe_rsp.is_read = hwpe_wen[ii];
             new_hwpe_rsp.data = hwpe_wen[ii] ? read_hwpe_data_from_model(hwpe_add[ii]) : '0;
             expected_hwpe_rsp_q[ii].push_back(new_hwpe_rsp);
-          end
-        end
-      end
-
-      // Phase 2: retire and validate responses using the expected transaction
-      // queues updated above.
-      for (int ii = 0; ii < N_LOG_MASTERS; ii++) begin
-        if (log_r_valid[ii] && log_r_ready[ii]) begin
-          debug_log_rsp_count_q[ii] = debug_log_rsp_count_q[ii] + 1;
-          if (expected_log_rsp_q[ii].size() == 0) begin
-            $fatal(
-              1,
-              "Spurious response on master_log_%0d: r_id=0x%0h r_data=0x%0h gnt_count=%0d rsp_count=%0d",
-              ii,
-              log_r_id[ii],
-              log_r_data[ii],
-              debug_log_gnt_count_q[ii],
-              debug_log_rsp_count_q[ii]
-            );
-          end else begin
-            exp_log_rsp = expected_log_rsp_q[ii].pop_front();
-            if (exp_log_rsp.is_read) begin
-              if (log_r_data[ii] !== exp_log_rsp.data) begin
-                $fatal(
-                  1,
-                  "Read-data mismatch on master_log_%0d: expected 0x%0h, got 0x%0h",
-                  ii,
-                  exp_log_rsp.data,
-                  log_r_data[ii]
-                );
-              end
-            end
-          end
-        end
-      end
-
-      for (int ii = 0; ii < N_HWPE; ii++) begin
-        if (hwpe_r_valid[ii] && hwpe_r_ready[ii]) begin
-          debug_hwpe_rsp_count_q[ii] = debug_hwpe_rsp_count_q[ii] + 1;
-          if (expected_hwpe_rsp_q[ii].size() == 0) begin
-            $fatal(
-              1,
-              "Spurious response on master_hwpe_%0d: r_id=0x%0h gnt_count=%0d rsp_count=%0d",
-              ii,
-              hwpe_r_id[ii],
-              debug_hwpe_gnt_count_q[ii],
-              debug_hwpe_rsp_count_q[ii]
-            );
-          end else begin
-            exp_hwpe_rsp = expected_hwpe_rsp_q[ii].pop_front();
-            if (exp_hwpe_rsp.is_read) begin
-              if (hwpe_r_data[ii] !== exp_hwpe_rsp.data) begin
-                $fatal(
-                  1,
-                  "Read-data mismatch on master_hwpe_%0d: expected 0x%0h, got 0x%0h",
-                  ii,
-                  exp_hwpe_rsp.data,
-                  hwpe_r_data[ii]
-                );
-              end
-            end
           end
         end
       end
@@ -329,7 +335,7 @@ module functional_scoreboard_monitor
         pass = 1'b0;
       end
     end
-    if (pass) begin
+    if (pass && !failure_seen_q) begin
       $display("Functional scoreboard monitor: PASS");
     end
   end

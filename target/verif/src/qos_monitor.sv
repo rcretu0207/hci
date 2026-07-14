@@ -25,6 +25,7 @@ module qos_monitor
   int unsigned high_prio_conflict_cycles_q;
   int unsigned low_service_conflict_cycles_q;
   logic [7:0]  priority_cnt_q;
+  bit failure_seen_q;
   logic narrow_req[N_BANKS];
   logic wide_req[N_BANKS];
   logic mem_req[N_BANKS];
@@ -91,6 +92,7 @@ module qos_monitor
           || mem_wen[bank_idx_i] !== expected_wen_i
           || mem_data[bank_idx_i] !== expected_data_i
           || mem_be[bank_idx_i] !== expected_be_i) begin
+        failure_seen_q = 1'b1;
         $fatal(
           1,
           "QoS mismatch on bank %0d: post-arbiter bank interface did not match the expected source.",
@@ -99,6 +101,7 @@ module qos_monitor
       end
     end else begin
       if (mem_req[bank_idx_i] !== 1'b0) begin
+        failure_seen_q = 1'b1;
         $fatal(
           1,
           "QoS mismatch on bank %0d: post-arbiter bank interface should have been idle.",
@@ -108,7 +111,7 @@ module qos_monitor
     end
   endtask
 
-  always_ff @(posedge clk_i or negedge rst_ni) begin
+  always @(posedge clk_i or negedge rst_ni) begin
     logic any_conflict;
     logic low_service_window;
 
@@ -117,7 +120,25 @@ module qos_monitor
       high_prio_conflict_cycles_q <= '0;
       low_service_conflict_cycles_q <= '0;
       priority_cnt_q <= '0;
+      failure_seen_q = 1'b0;
     end else begin
+      if ($isunknown({
+            ctrl_i.invert_prio,
+            ctrl_i.priority_cnt_numerator,
+            ctrl_i.priority_cnt_denominator
+          })
+          || ctrl_i.priority_cnt_denominator == 0
+          || ctrl_i.priority_cnt_numerator > ctrl_i.priority_cnt_denominator) begin
+        failure_seen_q = 1'b1;
+        $fatal(
+          1,
+          "Invalid QoS service window: invert=%0b numerator=%0d denominator=%0d.",
+          ctrl_i.invert_prio,
+          ctrl_i.priority_cnt_numerator,
+          ctrl_i.priority_cnt_denominator
+        );
+      end
+
       any_conflict = 1'b0;
       for (int ii = 0; ii < N_BANKS; ii++) begin
         if (narrow_req[ii] && wide_req[ii]) begin
@@ -188,6 +209,7 @@ module qos_monitor
           if (RANDOM_GNT == 0 && high_req_bank && low_req_bank) begin
             if (low_service_window) begin
               if (high_gnt_bank !== 1'b0 || low_gnt_bank !== 1'b1) begin
+                failure_seen_q = 1'b1;
                 $fatal(
                   1,
                   "QoS grant mismatch on bank %0d: expected logical low-priority branch to win conflict.",
@@ -196,6 +218,7 @@ module qos_monitor
               end
             end else begin
               if (high_gnt_bank !== 1'b1 || low_gnt_bank !== 1'b0) begin
+                failure_seen_q = 1'b1;
                 $fatal(
                   1,
                   "QoS grant mismatch on bank %0d: expected logical high-priority branch to win conflict.",
@@ -262,8 +285,10 @@ module qos_monitor
     real low_window_share_pct;
     string low_branch_str;
 
-    if (conflict_cycles_q == 0) begin
-      $display("QoS monitor: no conflict cycles observed.");
+    if (failure_seen_q) begin
+      $display("QoS monitor: FAIL");
+    end else if (conflict_cycles_q == 0) begin
+      $display("QoS monitor: INCONCLUSIVE (no conflict cycles observed).");
     end else begin
       low_window_share_pct = 100.0 * real'(low_service_conflict_cycles_q) / real'(conflict_cycles_q);
       low_branch_str = ctrl_i.invert_prio ? "narrow" : "wide";

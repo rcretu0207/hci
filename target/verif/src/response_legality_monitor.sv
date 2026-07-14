@@ -48,6 +48,8 @@ module response_legality_monitor
   int unsigned pending_hwpe_q[N_HWPE];
   int unsigned granted_hwpe_q[N_HWPE];
   int unsigned retired_hwpe_q[N_HWPE];
+  bit failure_seen_log_q[N_LOG_MASTERS];
+  bit failure_seen_hwpe_q[N_HWPE];
 
   generate
     for (genvar ii = 0; ii < N_LOG_MASTERS; ii++) begin : gen_log_bind
@@ -70,7 +72,7 @@ module response_legality_monitor
 
   generate
     for (genvar ii = 0; ii < N_LOG_MASTERS; ii++) begin : gen_log_monitor
-      always_ff @(posedge clk_i or negedge rst_ni) begin
+      always @(posedge clk_i or negedge rst_ni) begin
         int signed pending_delta;
         int unsigned visible_pending;
         int unsigned pending_after_cycle;
@@ -79,6 +81,7 @@ module response_legality_monitor
           pending_log_q[ii] <= '0;
           granted_log_q[ii] <= '0;
           retired_log_q[ii] <= '0;
+          failure_seen_log_q[ii] = 1'b0;
         end else begin
           pending_delta = 0;
 
@@ -87,9 +90,12 @@ module response_legality_monitor
             granted_log_q[ii] <= granted_log_q[ii] + 1;
           end
 
-          visible_pending = pending_log_q[ii] + ((log_req[ii] && log_gnt[ii]) ? 1 : 0);
+          // A response must belong to a transaction granted before this edge.
+          // A current-edge grant is included only in the next pending count.
+          visible_pending = pending_log_q[ii];
 
           if (log_r_valid[ii] && (visible_pending == 0)) begin
+            failure_seen_log_q[ii] = 1'b1;
             $fatal(
               1,
               "Response visible on master_log_%0d without any granted transaction pending.",
@@ -97,20 +103,14 @@ module response_legality_monitor
             );
           end
 
-          if (log_r_valid[ii] && log_r_ready[ii]) begin
-            if (visible_pending == 0) begin
-              $fatal(
-                1,
-                "Completed response on master_log_%0d without any granted transaction pending.",
-                ii
-              );
-            end
+          else if (log_r_valid[ii] && log_r_ready[ii]) begin
             pending_delta = pending_delta - 1;
             retired_log_q[ii] <= retired_log_q[ii] + 1;
           end
 
           pending_after_cycle = pending_log_q[ii] + pending_delta;
           if (log_end_resp[ii] && (pending_after_cycle != 0)) begin
+            failure_seen_log_q[ii] = 1'b1;
             $fatal(
               1,
               "master_log_%0d asserted end_resp with %0d responses still pending.",
@@ -125,7 +125,7 @@ module response_legality_monitor
     end
 
     for (genvar ii = 0; ii < N_HWPE; ii++) begin : gen_hwpe_monitor
-      always_ff @(posedge clk_i or negedge rst_ni) begin
+      always @(posedge clk_i or negedge rst_ni) begin
         int signed pending_delta;
         int unsigned visible_pending;
         int unsigned pending_after_cycle;
@@ -134,6 +134,7 @@ module response_legality_monitor
           pending_hwpe_q[ii] <= '0;
           granted_hwpe_q[ii] <= '0;
           retired_hwpe_q[ii] <= '0;
+          failure_seen_hwpe_q[ii] = 1'b0;
         end else begin
           pending_delta = 0;
 
@@ -142,10 +143,11 @@ module response_legality_monitor
             granted_hwpe_q[ii] <= granted_hwpe_q[ii] + 1;
           end
 
-          visible_pending = pending_hwpe_q[ii]
-              + ((hwpe_req[ii] && hwpe_gnt[ii] && hwpe_rsp_expected(ii, hwpe_wen[ii])) ? 1 : 0);
+          // A response must belong to a transaction granted before this edge.
+          visible_pending = pending_hwpe_q[ii];
 
           if (hwpe_r_valid[ii] && (visible_pending == 0)) begin
+            failure_seen_hwpe_q[ii] = 1'b1;
             $fatal(
               1,
               "Response visible on master_hwpe_%0d without any granted transaction pending.",
@@ -153,20 +155,14 @@ module response_legality_monitor
             );
           end
 
-          if (hwpe_r_valid[ii] && hwpe_r_ready[ii]) begin
-            if (visible_pending == 0) begin
-              $fatal(
-                1,
-                "Completed response on master_hwpe_%0d without any granted transaction pending.",
-                ii
-              );
-            end
+          else if (hwpe_r_valid[ii] && hwpe_r_ready[ii]) begin
             pending_delta = pending_delta - 1;
             retired_hwpe_q[ii] <= retired_hwpe_q[ii] + 1;
           end
 
           pending_after_cycle = pending_hwpe_q[ii] + pending_delta;
           if (hwpe_end_resp[ii] && (pending_after_cycle != 0)) begin
+            failure_seen_hwpe_q[ii] = 1'b1;
             $fatal(
               1,
               "master_hwpe_%0d asserted end_resp with %0d responses still pending.",
@@ -186,6 +182,9 @@ module response_legality_monitor
     pass = 1'b1;
 
     for (int ii = 0; ii < N_LOG_MASTERS; ii++) begin
+      if (failure_seen_log_q[ii]) begin
+        pass = 1'b0;
+      end
       if (pending_log_q[ii] != 0) begin
         $error(
           "master_log_%0d finished with %0d pending responses in response_legality_monitor.",
@@ -206,6 +205,9 @@ module response_legality_monitor
     end
 
     for (int ii = 0; ii < N_HWPE; ii++) begin
+      if (failure_seen_hwpe_q[ii]) begin
+        pass = 1'b0;
+      end
       if (pending_hwpe_q[ii] != 0) begin
         $error(
           "master_hwpe_%0d finished with %0d pending responses in response_legality_monitor.",

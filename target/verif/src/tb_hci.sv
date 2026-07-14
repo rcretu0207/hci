@@ -493,7 +493,8 @@ module tb_hci
   if (INTERCO_TYPE == HCI) begin : gen_functional_scoreboard_monitor
     functional_scoreboard_monitor #(
       .N_MASTER(N_DRIVERS),
-      .N_HWPE(N_HWPE)
+      .N_HWPE(N_HWPE),
+      .ROUTER_FIFO_DEPTH(EXPFIFO)
     ) i_functional_scoreboard_monitor (
       .clk_i(clk),
       .rst_ni(rst_n),
