@@ -16,6 +16,9 @@
  * Francesco Conti <fconti@iis.ee.ethz.ch>
  */
 
+// Demo fault: uncomment, rebuild, and rerun to corrupt returned read data.
+//`define HCI_DEMO_CORRUPT_READ_DATA
+
 module tcdm_banks_wrap #(
   parameter int unsigned BankSize  = 256,         // --> OVERRIDE
   parameter int unsigned NbBanks   = 1,           // --> OVERRIDE
@@ -37,6 +40,7 @@ module tcdm_banks_wrap #(
 
     // r_id is same as request id -> Don't know if this is needed, but OBI protocol requires it
     logic [IdWidth-1:0] resp_id_d, resp_id_q;
+    logic [DataWidth-1:0] bank_rdata;
     assign resp_id_d = tcdm_slave[i].id;
     assign tcdm_slave[i].r_id = resp_id_q;
 
@@ -80,8 +84,14 @@ module tcdm_banks_wrap #(
       .wdata_i(tcdm_slave[i].data                       ), // write data
       .be_i   (tcdm_slave[i].be                         ), // write byte enable
 
-      .rdata_o(tcdm_slave[i].r_data                     )  // read data
+      .rdata_o(bank_rdata                               )  // read data
     );
+
+`ifdef HCI_DEMO_CORRUPT_READ_DATA
+    assign tcdm_slave[i].r_data = bank_rdata ^ {{(DataWidth-1){1'b0}}, 1'b1};
+`else
+    assign tcdm_slave[i].r_data = bank_rdata;
+`endif
 
     //NOTE: Commented out. r_valid response is handled by interconnect
 
@@ -100,4 +110,3 @@ module tcdm_banks_wrap #(
   end
 
 endmodule
-

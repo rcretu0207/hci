@@ -17,6 +17,9 @@
 
 `include "hci_helpers.svh"
 
+// Demo fault: uncomment, rebuild, and rerun to assert end_resp early on master 0.
+//`define HCI_DEMO_EARLY_END_RESP
+
 module tb_hci
   import hci_package::*;
   import tb_hci_pkg::*;
@@ -24,10 +27,17 @@ module tb_hci
 
   logic                   clk, rst_n;
   logic [N_DRIVERS-1:0]   s_end_resp;      // end_resp_o from all drivers
+  logic [N_DRIVERS-1:0]   s_end_resp_legality;
   logic [N_DRIVERS-1:0]   s_fence_reached; // fence_reached_o from all drivers (level, HIGH while PAUSED)
   logic [N_DRIVERS-1:0]   s_resume;        // resume_i to each driver (asserted when fence deps are met)
   int unsigned             fence_idx [N_DRIVERS]; // number of fences each driver has passed so far
   hci_interconnect_ctrl_t s_hci_ctrl;
+
+`ifdef HCI_DEMO_EARLY_END_RESP
+  assign s_end_resp_legality = s_end_resp | {{(N_DRIVERS-1){1'b0}}, 1'b1};
+`else
+  assign s_end_resp_legality = s_end_resp;
+`endif
 
   clk_rst_gen #(
     .ClkPeriod(CLK_PERIOD),
@@ -510,7 +520,7 @@ module tb_hci
     ) i_response_legality_monitor (
       .clk_i(clk),
       .rst_ni(rst_n),
-      .end_resp_i(s_end_resp),
+      .end_resp_i(s_end_resp_legality),
       .hci_driver_log_if(hci_driver_log_if),
       .hci_driver_hwpe_if(hci_driver_hwpe_if)
     );

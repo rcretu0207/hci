@@ -55,6 +55,9 @@
  *   +----------------------------+--------------+-------------------------------------------------------------------------------+
  *
  */
+
+// Demo fault: uncomment, rebuild, and rerun to select the opposite branch.
+// `define HCI_DEMO_WRONG_BRANCH_SELECTION
  
 module hci_arbiter
   import hci_package::*;
@@ -140,7 +143,13 @@ module hci_arbiter
   // Side select
   generate
     for(genvar ii=0; ii<NB_CHAN; ii++) begin: gen_side_select
+`ifdef HCI_DEMO_WRONG_BRANCH_SELECTION
+      assign hs_pass_d[ii] = (in_high[ii].req && in_low[ii].req)
+          ? ~(((~hs_req_suppress_d) & hs_req_in[ii]) ^ switch_channels_d)
+          :  (((~hs_req_suppress_d) & hs_req_in[ii]) ^ switch_channels_d);
+`else
       assign hs_pass_d[ii] = ((~hs_req_suppress_d) & hs_req_in[ii]) ^ switch_channels_d;
+`endif
     end // side_select
   endgenerate
 

@@ -1,0 +1,11 @@
+{
+  "description": "Functional verification: random grants, inverted priority, 1/4 service window",
+  "parameters": {
+    "CLK_PERIOD": 5,
+    "RST_CLK_CYCLES": 10,
+    "RANDOM_GNT": 1,
+    "INVERT_PRIO": 1,
+    "PRIORITY_CNT_NUMERATOR": 1,
+    "PRIORITY_CNT_DENOMINATOR": 4
+  }
+}

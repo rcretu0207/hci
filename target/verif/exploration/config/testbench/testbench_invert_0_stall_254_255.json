@@ -1,0 +1,11 @@
+{
+  "description": "Functional verification: normal priority, 254/255 service window",
+  "parameters": {
+    "CLK_PERIOD": 5,
+    "RST_CLK_CYCLES": 10,
+    "RANDOM_GNT": 0,
+    "INVERT_PRIO": 0,
+    "PRIORITY_CNT_NUMERATOR": 254,
+    "PRIORITY_CNT_DENOMINATOR": 255
+  }
+}
