@@ -1,10 +1,10 @@
 /**
  * HCI branch-arbitration QoS monitor
  *
- * Replays the wide-vs-narrow arbiter service-window policy on conflict cycles,
- * checks the post-arbiter bank selection, and also sanity-checks the
- * conflict-free pass-through cases. It reports the observed number of conflict
- * cycles served by the narrow and wide branches.
+ * Observes the wide-vs-narrow branch selected on each conflict cycle, checks
+ * the post-arbiter bank output, and verifies the configured service ratio over
+ * all completed conflict windows in aggregate, without constraining service
+ * order. It also checks conflict-free pass-through.
  */
 
 module qos_monitor
@@ -13,113 +13,116 @@ module qos_monitor
 #(
   parameter int unsigned N_BANKS = 16
 ) (
-  input logic                clk_i,
-  input logic                rst_ni,
+  input logic                   clk_i,
+  input logic                   rst_ni,
   input hci_interconnect_ctrl_t ctrl_i,
-  hci_core_intf.monitor      narrow_bank_if [0:N_BANKS-1],
-  hci_core_intf.monitor      wide_bank_if [0:N_BANKS-1],
-  hci_core_intf.monitor      mem_bank_if [0:N_BANKS-1]
+  hci_core_intf.monitor         narrow_bank_if [0:N_BANKS-1],
+  hci_core_intf.monitor         wide_bank_if [0:N_BANKS-1],
+  hci_core_intf.monitor         mem_bank_if [0:N_BANKS-1]
 );
 
+  typedef struct packed {
+    logic                      req;
+    logic                      gnt;
+    logic [ADDR_WIDTH-1:0]     add;
+    logic                      wen;
+    logic [DATA_WIDTH-1:0]     data;
+    logic [DATA_WIDTH/8-1:0]   be;
+  } bank_request_t;
+
   int unsigned conflict_cycles_q;
-  int unsigned high_prio_conflict_cycles_q;
-  int unsigned low_service_conflict_cycles_q;
-  logic [7:0]  priority_cnt_q;
+  int unsigned high_conflict_cycles_q;
+  int unsigned low_conflict_cycles_q;
+  int unsigned ambiguous_conflict_cycles_q;
   bit failure_seen_q;
-  logic narrow_req[N_BANKS];
-  logic wide_req[N_BANKS];
-  logic mem_req[N_BANKS];
-  logic narrow_gnt[N_BANKS];
-  logic wide_gnt[N_BANKS];
-  logic [ADDR_WIDTH-1:0] narrow_add[N_BANKS];
-  logic [ADDR_WIDTH-1:0] wide_add[N_BANKS];
-  logic [ADDR_WIDTH-1:0] mem_add[N_BANKS];
-  logic narrow_wen[N_BANKS];
-  logic wide_wen[N_BANKS];
-  logic mem_wen[N_BANKS];
-  logic [DATA_WIDTH-1:0] narrow_data[N_BANKS];
-  logic [DATA_WIDTH-1:0] wide_data[N_BANKS];
-  logic [DATA_WIDTH-1:0] mem_data[N_BANKS];
-  logic [DATA_WIDTH/8-1:0] narrow_be[N_BANKS];
-  logic [DATA_WIDTH/8-1:0] wide_be[N_BANKS];
-  logic [DATA_WIDTH/8-1:0] mem_be[N_BANKS];
+  bank_request_t narrow_request[N_BANKS];
+  bank_request_t wide_request[N_BANKS];
+  bank_request_t mem_request[N_BANKS];
 
   generate
     for (genvar ii = 0; ii < N_BANKS; ii++) begin : gen_bind
-      assign narrow_req[ii] = narrow_bank_if[ii].req;
-      assign wide_req[ii] = wide_bank_if[ii].req;
-      assign mem_req[ii] = mem_bank_if[ii].req;
-      assign narrow_gnt[ii] = narrow_bank_if[ii].gnt;
-      assign wide_gnt[ii] = wide_bank_if[ii].gnt;
-      assign narrow_add[ii] = narrow_bank_if[ii].add;
-      assign wide_add[ii] = wide_bank_if[ii].add;
-      assign mem_add[ii] = mem_bank_if[ii].add;
-      assign narrow_wen[ii] = narrow_bank_if[ii].wen;
-      assign wide_wen[ii] = wide_bank_if[ii].wen;
-      assign mem_wen[ii] = mem_bank_if[ii].wen;
-      assign narrow_data[ii] = narrow_bank_if[ii].data;
-      assign wide_data[ii] = wide_bank_if[ii].data;
-      assign mem_data[ii] = mem_bank_if[ii].data;
-      assign narrow_be[ii] = narrow_bank_if[ii].be;
-      assign wide_be[ii] = wide_bank_if[ii].be;
-      assign mem_be[ii] = mem_bank_if[ii].be;
+      assign narrow_request[ii].req = narrow_bank_if[ii].req;
+      assign narrow_request[ii].gnt = narrow_bank_if[ii].gnt;
+      assign narrow_request[ii].add = narrow_bank_if[ii].add;
+      assign narrow_request[ii].wen = narrow_bank_if[ii].wen;
+      assign narrow_request[ii].data = narrow_bank_if[ii].data;
+      assign narrow_request[ii].be = narrow_bank_if[ii].be;
+      assign wide_request[ii].req = wide_bank_if[ii].req;
+      assign wide_request[ii].gnt = wide_bank_if[ii].gnt;
+      assign wide_request[ii].add = wide_bank_if[ii].add;
+      assign wide_request[ii].wen = wide_bank_if[ii].wen;
+      assign wide_request[ii].data = wide_bank_if[ii].data;
+      assign wide_request[ii].be = wide_bank_if[ii].be;
+      assign mem_request[ii].req = mem_bank_if[ii].req;
+      assign mem_request[ii].gnt = mem_bank_if[ii].gnt;
+      assign mem_request[ii].add = mem_bank_if[ii].add;
+      assign mem_request[ii].wen = mem_bank_if[ii].wen;
+      assign mem_request[ii].data = mem_bank_if[ii].data;
+      assign mem_request[ii].be = mem_bank_if[ii].be;
     end
   endgenerate
 
-  function automatic logic in_low_service_window(
-    input logic [7:0] priority_cnt_i,
-    input logic       any_conflict_i
+  function automatic bank_request_t get_branch_request(
+    input int unsigned bank_idx_i,
+    input bit          high_priority_i
   );
-    if (ctrl_i.priority_cnt_numerator == 0) begin
-      return 1'b0;
+    bank_request_t ret;
+    bit use_wide;
+
+    use_wide = high_priority_i ? ctrl_i.invert_prio : !ctrl_i.invert_prio;
+    if (use_wide) begin
+      ret = wide_request[bank_idx_i];
+    end else begin
+      ret = narrow_request[bank_idx_i];
     end
-    return any_conflict_i
-        && (priority_cnt_i >= ctrl_i.priority_cnt_numerator)
-        && (priority_cnt_i < ctrl_i.priority_cnt_denominator);
+    return ret;
   endfunction
 
-  task automatic check_expected_source(
-    input int unsigned bank_idx_i,
-    input logic        expected_req_i,
-    input logic [ADDR_WIDTH-1:0] expected_add_i,
-    input logic        expected_wen_i,
-    input logic [DATA_WIDTH-1:0] expected_data_i,
-    input logic [DATA_WIDTH/8-1:0] expected_be_i
+  function automatic bit output_matches_source(
+    input int unsigned   bank_idx_i,
+    input bank_request_t source_i
   );
-    if (expected_req_i) begin
-      if (mem_req[bank_idx_i] !== 1'b1
-          || mem_add[bank_idx_i] !== expected_add_i
-          || mem_wen[bank_idx_i] !== expected_wen_i
-          || mem_data[bank_idx_i] !== expected_data_i
-          || mem_be[bank_idx_i] !== expected_be_i) begin
-        failure_seen_q = 1'b1;
-        $fatal(
-          1,
-          "QoS mismatch on bank %0d: post-arbiter bank interface did not match the expected source.",
-          bank_idx_i
-        );
-      end
-    end else begin
-      if (mem_req[bank_idx_i] !== 1'b0) begin
-        failure_seen_q = 1'b1;
-        $fatal(
-          1,
-          "QoS mismatch on bank %0d: post-arbiter bank interface should have been idle.",
-          bank_idx_i
-        );
-      end
+    if (source_i.req === 1'b1) begin
+      return mem_request[bank_idx_i].req === 1'b1
+          && mem_request[bank_idx_i].add === source_i.add
+          && mem_request[bank_idx_i].wen === source_i.wen
+          && mem_request[bank_idx_i].data === source_i.data
+          && mem_request[bank_idx_i].be === source_i.be;
+    end
+    if (source_i.req === 1'b0) begin
+      return mem_request[bank_idx_i].req === 1'b0;
+    end
+    return 1'b0;
+  endfunction
+
+  task automatic check_output_source(
+    input int unsigned   bank_idx_i,
+    input bank_request_t expected_i
+  );
+    if (!output_matches_source(bank_idx_i, expected_i)) begin
+      failure_seen_q = 1'b1;
+      $fatal(
+        1,
+        "QoS mismatch on bank %0d: post-arbiter interface did not match the expected source.",
+        bank_idx_i
+      );
     end
   endtask
 
   always @(posedge clk_i or negedge rst_ni) begin
-    logic any_conflict;
-    logic low_service_window;
-
+    bit any_conflict;
+    bit selected_high;
+    bit selection_found;
+    bit high_selection_matches;
+    bit low_selection_matches;
+    bank_request_t high_request;
+    bank_request_t low_request;
+    bank_request_t expected_request;
     if (!rst_ni) begin
-      conflict_cycles_q <= '0;
-      high_prio_conflict_cycles_q <= '0;
-      low_service_conflict_cycles_q <= '0;
-      priority_cnt_q <= '0;
+      conflict_cycles_q = '0;
+      high_conflict_cycles_q = '0;
+      low_conflict_cycles_q = '0;
+      ambiguous_conflict_cycles_q = '0;
       failure_seen_q = 1'b0;
     end else begin
       if ($isunknown({
@@ -141,171 +144,205 @@ module qos_monitor
 
       any_conflict = 1'b0;
       for (int ii = 0; ii < N_BANKS; ii++) begin
-        if (narrow_req[ii] && wide_req[ii]) begin
+        if (narrow_request[ii].req && wide_request[ii].req) begin
           any_conflict = 1'b1;
         end
       end
 
-      low_service_window = in_low_service_window(priority_cnt_q, any_conflict);
-
       if (any_conflict) begin
-        logic high_req_bank;
-        logic low_req_bank;
-        logic high_gnt_bank;
-        logic low_gnt_bank;
-        logic [ADDR_WIDTH-1:0] high_add_bank;
-        logic [ADDR_WIDTH-1:0] low_add_bank;
-        logic high_wen_bank;
-        logic low_wen_bank;
-        logic [DATA_WIDTH-1:0] high_data_bank;
-        logic [DATA_WIDTH-1:0] low_data_bank;
-        logic [DATA_WIDTH/8-1:0] high_be_bank;
-        logic [DATA_WIDTH/8-1:0] low_be_bank;
+        selected_high = 1'b0;
+        selection_found = 1'b0;
+        high_selection_matches = 1'b1;
+        low_selection_matches = 1'b1;
 
-        conflict_cycles_q <= conflict_cycles_q + 1;
-        if (low_service_window) begin
-          low_service_conflict_cycles_q <= low_service_conflict_cycles_q + 1;
-        end else begin
-          high_prio_conflict_cycles_q <= high_prio_conflict_cycles_q + 1;
+        // Check whether the complete output vector is consistent with a global
+        // high-branch or low-branch selection.
+        for (int ii = 0; ii < N_BANKS; ii++) begin
+          high_request = get_branch_request(ii, 1'b1);
+          low_request = get_branch_request(ii, 1'b0);
+          expected_request = high_request.req ? high_request : low_request;
+          if (!output_matches_source(ii, expected_request)) begin
+            high_selection_matches = 1'b0;
+          end
+          if (!output_matches_source(ii, low_request)) begin
+            low_selection_matches = 1'b0;
+          end
         end
 
+        if (!high_selection_matches && !low_selection_matches) begin
+          failure_seen_q = 1'b1;
+          $fatal(1, "QoS mismatch: bank outputs matched neither global branch selection.");
+        end else if (high_selection_matches && !low_selection_matches) begin
+          selected_high = 1'b1;
+          selection_found = 1'b1;
+        end else if (!high_selection_matches && low_selection_matches) begin
+          selected_high = 1'b0;
+          selection_found = 1'b1;
+        end
+
+        // If request fields are indistinguishable, grants can still reveal the
+        // selected branch on a bank that accepted the request.
         for (int ii = 0; ii < N_BANKS; ii++) begin
-          if (ctrl_i.invert_prio) begin
-            high_req_bank = wide_req[ii];
-            low_req_bank = narrow_req[ii];
-            high_gnt_bank = wide_gnt[ii];
-            low_gnt_bank = narrow_gnt[ii];
-            high_add_bank = wide_add[ii];
-            low_add_bank = narrow_add[ii];
-            high_wen_bank = wide_wen[ii];
-            low_wen_bank = narrow_wen[ii];
-            high_data_bank = wide_data[ii];
-            low_data_bank = narrow_data[ii];
-            high_be_bank = wide_be[ii];
-            low_be_bank = narrow_be[ii];
-          end else begin
-            high_req_bank = narrow_req[ii];
-            low_req_bank = wide_req[ii];
-            high_gnt_bank = narrow_gnt[ii];
-            low_gnt_bank = wide_gnt[ii];
-            high_add_bank = narrow_add[ii];
-            low_add_bank = wide_add[ii];
-            high_wen_bank = narrow_wen[ii];
-            low_wen_bank = wide_wen[ii];
-            high_data_bank = narrow_data[ii];
-            low_data_bank = wide_data[ii];
-            high_be_bank = narrow_be[ii];
-            low_be_bank = wide_be[ii];
+          bit grant_identifies_selection;
+          bit grant_selected_high;
+
+          high_request = get_branch_request(ii, 1'b1);
+          low_request = get_branch_request(ii, 1'b0);
+          grant_identifies_selection = 1'b0;
+          grant_selected_high = 1'b0;
+          if (high_request.req && low_request.req) begin
+            if (high_request.gnt === 1'b1 && low_request.gnt === 1'b0) begin
+              grant_identifies_selection = 1'b1;
+              grant_selected_high = 1'b1;
+            end else if (high_request.gnt === 1'b0 && low_request.gnt === 1'b1) begin
+              grant_identifies_selection = 1'b1;
+              grant_selected_high = 1'b0;
+            end
+
+            if (grant_identifies_selection) begin
+              if (!selection_found) begin
+                selected_high = grant_selected_high;
+                selection_found = 1'b1;
+              end else if (selected_high != grant_selected_high) begin
+                failure_seen_q = 1'b1;
+                $fatal(1, "QoS mismatch: contested banks selected different branches.");
+              end
+            end
           end
 
-          if (low_service_window) begin
-            check_expected_source(ii, low_req_bank, low_add_bank, low_wen_bank, low_data_bank, low_be_bank);
-          end else if (high_req_bank) begin
-            check_expected_source(ii, high_req_bank, high_add_bank, high_wen_bank, high_data_bank, high_be_bank);
-          end else begin
-            check_expected_source(ii, low_req_bank, low_add_bank, low_wen_bank, low_data_bank, low_be_bank);
-          end
-
-          if (RANDOM_GNT == 0 && high_req_bank && low_req_bank) begin
-            if (low_service_window) begin
-              if (high_gnt_bank !== 1'b0 || low_gnt_bank !== 1'b1) begin
-                failure_seen_q = 1'b1;
-                $fatal(
-                  1,
-                  "QoS grant mismatch on bank %0d: expected logical low-priority branch to win conflict.",
-                  ii
-                );
-              end
-            end else begin
-              if (high_gnt_bank !== 1'b1 || low_gnt_bank !== 1'b0) begin
-                failure_seen_q = 1'b1;
-                $fatal(
-                  1,
-                  "QoS grant mismatch on bank %0d: expected logical high-priority branch to win conflict.",
-                  ii
-                );
-              end
+          if (selection_found && RANDOM_GNT == 0
+              && high_request.req && low_request.req) begin
+            if (selected_high
+                && (high_request.gnt !== 1'b1 || low_request.gnt !== 1'b0)) begin
+              failure_seen_q = 1'b1;
+              $fatal(1, "QoS grant mismatch on bank %0d: expected high branch.", ii);
+            end else if (!selected_high
+                && (high_request.gnt !== 1'b0 || low_request.gnt !== 1'b1)) begin
+              failure_seen_q = 1'b1;
+              $fatal(1, "QoS grant mismatch on bank %0d: expected low branch.", ii);
             end
           end
         end
 
-        if (priority_cnt_q == ctrl_i.priority_cnt_denominator - 1) begin
-          priority_cnt_q <= '0;
+        conflict_cycles_q = conflict_cycles_q + 1;
+        if (!selection_found) begin
+          ambiguous_conflict_cycles_q = ambiguous_conflict_cycles_q + 1;
+        end else if (selected_high) begin
+          high_conflict_cycles_q = high_conflict_cycles_q + 1;
         end else begin
-          priority_cnt_q <= priority_cnt_q + 1;
+          low_conflict_cycles_q = low_conflict_cycles_q + 1;
         end
+
       end else begin
-        logic high_req_bank;
-        logic low_req_bank;
-        logic [ADDR_WIDTH-1:0] high_add_bank;
-        logic [ADDR_WIDTH-1:0] low_add_bank;
-        logic high_wen_bank;
-        logic low_wen_bank;
-        logic [DATA_WIDTH-1:0] high_data_bank;
-        logic [DATA_WIDTH-1:0] low_data_bank;
-        logic [DATA_WIDTH/8-1:0] high_be_bank;
-        logic [DATA_WIDTH/8-1:0] low_be_bank;
-
+        // With no narrow-wide conflict, whichever branch requests a bank passes through.
         for (int ii = 0; ii < N_BANKS; ii++) begin
-          if (ctrl_i.invert_prio) begin
-            high_req_bank = wide_req[ii];
-            low_req_bank = narrow_req[ii];
-            high_add_bank = wide_add[ii];
-            low_add_bank = narrow_add[ii];
-            high_wen_bank = wide_wen[ii];
-            low_wen_bank = narrow_wen[ii];
-            high_data_bank = wide_data[ii];
-            low_data_bank = narrow_data[ii];
-            high_be_bank = wide_be[ii];
-            low_be_bank = narrow_be[ii];
-          end else begin
-            high_req_bank = narrow_req[ii];
-            low_req_bank = wide_req[ii];
-            high_add_bank = narrow_add[ii];
-            low_add_bank = wide_add[ii];
-            high_wen_bank = narrow_wen[ii];
-            low_wen_bank = wide_wen[ii];
-            high_data_bank = narrow_data[ii];
-            low_data_bank = wide_data[ii];
-            high_be_bank = narrow_be[ii];
-            low_be_bank = wide_be[ii];
-          end
-
-          if (high_req_bank) begin
-            check_expected_source(ii, high_req_bank, high_add_bank, high_wen_bank, high_data_bank, high_be_bank);
-          end else begin
-            check_expected_source(ii, low_req_bank, low_add_bank, low_wen_bank, low_data_bank, low_be_bank);
-          end
+          high_request = get_branch_request(ii, 1'b1);
+          low_request = get_branch_request(ii, 1'b0);
+          expected_request = high_request.req ? high_request : low_request;
+          check_output_source(ii, expected_request);
         end
       end
     end
   end
 
   final begin
-    real low_window_share_pct;
-    string low_branch_str;
+    real high_share_pct;
+    string high_branch;
+    bit ratio_inconclusive;
+    int unsigned complete_windows;
+    int unsigned partial_window_cycles;
+    longint unsigned target_product;
+    longint unsigned minimum_high_cycles;
+    longint unsigned maximum_high_cycles;
+    longint unsigned possible_high_minimum;
+    longint unsigned possible_high_maximum;
+
+    ratio_inconclusive = 1'b0;
+    target_product = 0;
+    if (ctrl_i.priority_cnt_denominator == 0) begin
+      complete_windows = 0;
+      partial_window_cycles = 0;
+      minimum_high_cycles = 0;
+      maximum_high_cycles = 0;
+    end else if (ctrl_i.priority_cnt_numerator == 0) begin
+      complete_windows = conflict_cycles_q / ctrl_i.priority_cnt_denominator;
+      partial_window_cycles = conflict_cycles_q % ctrl_i.priority_cnt_denominator;
+      minimum_high_cycles = conflict_cycles_q;
+      maximum_high_cycles = conflict_cycles_q;
+    end else begin
+      complete_windows = conflict_cycles_q / ctrl_i.priority_cnt_denominator;
+      partial_window_cycles = conflict_cycles_q % ctrl_i.priority_cnt_denominator;
+      target_product = longint'(conflict_cycles_q) * ctrl_i.priority_cnt_numerator;
+      minimum_high_cycles = target_product / ctrl_i.priority_cnt_denominator;
+      maximum_high_cycles = (target_product + ctrl_i.priority_cnt_denominator - 1)
+          / ctrl_i.priority_cnt_denominator;
+    end
+
+    possible_high_minimum = high_conflict_cycles_q;
+    possible_high_maximum = high_conflict_cycles_q + ambiguous_conflict_cycles_q;
+
+    if (!failure_seen_q && complete_windows != 0
+        && (possible_high_maximum < minimum_high_cycles
+            || possible_high_minimum > maximum_high_cycles)) begin
+      failure_seen_q = 1'b1;
+      $error(
+        "QoS ratio mismatch: possible high selections are %0d to %0d; expected %0d to %0d after %0d conflicts.",
+        possible_high_minimum,
+        possible_high_maximum,
+        minimum_high_cycles,
+        maximum_high_cycles,
+        conflict_cycles_q
+      );
+    end else if (!failure_seen_q && complete_windows != 0
+        && (possible_high_minimum < minimum_high_cycles
+            || possible_high_maximum > maximum_high_cycles)) begin
+      ratio_inconclusive = 1'b1;
+    end
 
     if (failure_seen_q) begin
       $display("QoS monitor: FAIL");
     end else if (conflict_cycles_q == 0) begin
       $display("QoS monitor: INCONCLUSIVE (no conflict cycles observed).");
-    end else begin
-      low_window_share_pct = 100.0 * real'(low_service_conflict_cycles_q) / real'(conflict_cycles_q);
-      low_branch_str = ctrl_i.invert_prio ? "narrow" : "wide";
+    end else if (complete_windows == 0) begin
       $display(
-        "QoS monitor: conflicts=%0d high_window=%0d low_window=%0d invert_prio=%0d num=%0d den=%0d",
+        "QoS monitor: INCONCLUSIVE (%0d conflicts, no complete %0d-cycle service window).",
         conflict_cycles_q,
-        high_prio_conflict_cycles_q,
-        low_service_conflict_cycles_q,
+        ctrl_i.priority_cnt_denominator
+      );
+    end else if (ratio_inconclusive) begin
+      $display(
+        "QoS monitor: INCONCLUSIVE (%0d branch selections were observationally ambiguous).",
+        ambiguous_conflict_cycles_q
+      );
+    end else begin
+      high_branch = ctrl_i.invert_prio ? "wide" : "narrow";
+      $display(
+        "QoS monitor: conflicts=%0d high=%0d low=%0d ambiguous=%0d complete_windows=%0d partial_window=%0d invert_prio=%0d num=%0d den=%0d",
+        conflict_cycles_q,
+        high_conflict_cycles_q,
+        low_conflict_cycles_q,
+        ambiguous_conflict_cycles_q,
+        complete_windows,
+        partial_window_cycles,
         ctrl_i.invert_prio,
         ctrl_i.priority_cnt_numerator,
         ctrl_i.priority_cnt_denominator
       );
-      $display(
-        "QoS monitor: low-window share=%0.2f%% (logical low branch = %s)",
-        low_window_share_pct,
-        low_branch_str
-      );
+      if (ambiguous_conflict_cycles_q == 0) begin
+        high_share_pct = 100.0 * real'(high_conflict_cycles_q) / real'(conflict_cycles_q);
+        $display(
+          "QoS monitor: observed high-priority share=%0.2f%% (logical high branch = %s)",
+          high_share_pct,
+          high_branch
+        );
+      end else begin
+        $display(
+          "QoS monitor: possible high selections=%0d to %0d (logical high branch = %s)",
+          possible_high_minimum,
+          possible_high_maximum,
+          high_branch
+        );
+      end
       $display("QoS monitor: PASS");
     end
   end

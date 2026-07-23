@@ -32,6 +32,7 @@ module tb_hci
   logic [N_DRIVERS-1:0]   s_resume;        // resume_i to each driver (asserted when fence deps are met)
   int unsigned             fence_idx [N_DRIVERS]; // number of fences each driver has passed so far
   hci_interconnect_ctrl_t s_hci_ctrl;
+  logic [DATA_WIDTH-1:0] s_tcdm_stored_words [0:N_BANKS-1][0:N_WORDS-1];
 
 `ifdef HCI_DEMO_EARLY_END_RESP
   assign s_end_resp_legality = s_end_resp | {{(N_DRIVERS-1){1'b0}}, 1'b1};
@@ -384,6 +385,7 @@ module tb_hci
     .clk_i(clk),
     .rst_ni(rst_n),
     .test_mode_i(1'b0),
+    .stored_words_o(s_tcdm_stored_words),
     .tcdm_slave(hci_target_mems)
   );
 
@@ -504,10 +506,13 @@ module tb_hci
     functional_scoreboard_monitor #(
       .N_MASTER(N_DRIVERS),
       .N_HWPE(N_HWPE),
+      .N_BANKS(N_BANKS),
+      .BANK_WORDS(N_WORDS),
       .ROUTER_FIFO_DEPTH(EXPFIFO)
     ) i_functional_scoreboard_monitor (
       .clk_i(clk),
       .rst_ni(rst_n),
+      .tcdm_stored_words_i(s_tcdm_stored_words),
       .hci_driver_log_if(hci_driver_log_if),
       .hci_driver_hwpe_if(hci_driver_hwpe_if)
     );

@@ -31,6 +31,7 @@ module tcdm_banks_wrap #(
   input logic        rst_ni,
   input logic        test_mode_i,
 
+  output logic [DataWidth-1:0] stored_words_o [0:NbBanks-1][0:BankSize-1],
   hci_core_intf.target tcdm_slave[0:NbBanks-1]
 );
 
@@ -86,6 +87,10 @@ module tcdm_banks_wrap #(
 
       .rdata_o(bank_rdata                               )  // read data
     );
+
+    for (genvar word_idx = 0; word_idx < BankSize; word_idx++) begin : gen_stored_words
+      assign stored_words_o[i][word_idx] = i_bank.sram[word_idx];
+    end
 
 `ifdef HCI_DEMO_CORRUPT_READ_DATA
     assign tcdm_slave[i].r_data = bank_rdata ^ {{(DataWidth-1){1'b0}}, 1'b1};

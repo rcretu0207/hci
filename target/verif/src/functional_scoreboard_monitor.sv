@@ -7,6 +7,7 @@
  *  - matches the oldest pending transaction, with ordering observed through
  *    the returned read payload when responses are otherwise indistinguishable;
  *  - returns the expected read data;
+ *  - leaves every TCDM word equal to the final shadow-memory contents;
  *  - never appears spuriously.
  */
 
@@ -15,12 +16,16 @@ module functional_scoreboard_monitor
 #(
   parameter int unsigned N_MASTER = 4,
   parameter int unsigned N_HWPE = 1,
+  parameter int unsigned N_BANKS = 16,
+  parameter int unsigned BANK_WORDS =
+      (TOT_MEM_SIZE * 1024 / N_BANKS) / (DATA_WIDTH / 8),
   // Driver-side grants coincide with memory-side acceptance only without the
   // optional wide-router request FIFO.
   parameter int unsigned ROUTER_FIFO_DEPTH = 0
 ) (
   input logic                clk_i,
   input logic                rst_ni,
+  input logic [DATA_WIDTH-1:0] tcdm_stored_words_i [0:N_BANKS-1][0:BANK_WORDS-1],
   hci_core_intf.monitor      hci_driver_log_if [0:N_MASTER-N_HWPE-1],
   hci_core_intf.monitor      hci_driver_hwpe_if [0:N_HWPE-1]
 );
@@ -314,7 +319,13 @@ module functional_scoreboard_monitor
 
   final begin
     bit pass;
+    int unsigned content_mismatches;
+    logic [DATA_WIDTH-1:0] expected_word;
+    int unsigned global_word_idx;
+    int unsigned global_byte_idx;
+
     pass = 1'b1;
+    content_mismatches = 0;
     for (int ii = 0; ii < N_LOG_MASTERS; ii++) begin
       if (expected_log_rsp_q[ii].size() != 0) begin
         $error(
@@ -335,8 +346,49 @@ module functional_scoreboard_monitor
         pass = 1'b0;
       end
     end
+
+    if (N_BANKS * BANK_WORDS * WORD_BYTES != MEM_BYTES) begin
+      $error(
+        "Scoreboard memory geometry mismatch: banks=%0d words_per_bank=%0d word_bytes=%0d mem_bytes=%0d",
+        N_BANKS,
+        BANK_WORDS,
+        WORD_BYTES,
+        MEM_BYTES
+      );
+      pass = 1'b0;
+    end else begin
+      for (int bank_idx = 0; bank_idx < N_BANKS; bank_idx++) begin
+        for (int bank_word_idx = 0; bank_word_idx < BANK_WORDS; bank_word_idx++) begin
+          global_word_idx = bank_word_idx * N_BANKS + bank_idx;
+          global_byte_idx = global_word_idx * WORD_BYTES;
+          for (int byte_idx = 0; byte_idx < WORD_BYTES; byte_idx++) begin
+            expected_word[8*byte_idx +: 8] = mem_model[global_byte_idx + byte_idx];
+          end
+          if (tcdm_stored_words_i[bank_idx][bank_word_idx] !== expected_word) begin
+            if (content_mismatches < 8) begin
+              $error(
+                "Stored-content mismatch on bank %0d word %0d: expected 0x%0h, got 0x%0h",
+                bank_idx,
+                bank_word_idx,
+                expected_word,
+                tcdm_stored_words_i[bank_idx][bank_word_idx]
+              );
+            end
+            content_mismatches++;
+          end
+        end
+      end
+      if (content_mismatches != 0) begin
+        $error("Functional scoreboard found %0d stored-content mismatches.", content_mismatches);
+        pass = 1'b0;
+      end
+    end
+
     if (pass && !failure_seen_q) begin
-      $display("Functional scoreboard monitor: PASS");
+      $display(
+        "Functional scoreboard monitor: PASS (responses and %0d stored words)",
+        N_BANKS * BANK_WORDS
+      );
     end
   end
 
