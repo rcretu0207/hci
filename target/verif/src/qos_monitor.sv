@@ -251,14 +251,16 @@ module qos_monitor
     bit ratio_inconclusive;
     int unsigned complete_windows;
     int unsigned partial_window_cycles;
-    longint unsigned target_product;
     longint unsigned minimum_high_cycles;
     longint unsigned maximum_high_cycles;
+    longint unsigned minimum_partial_high_cycles;
+    longint unsigned maximum_partial_high_cycles;
     longint unsigned possible_high_minimum;
     longint unsigned possible_high_maximum;
 
     ratio_inconclusive = 1'b0;
-    target_product = 0;
+    minimum_partial_high_cycles = 0;
+    maximum_partial_high_cycles = 0;
     if (ctrl_i.priority_cnt_denominator == 0) begin
       complete_windows = 0;
       partial_window_cycles = 0;
@@ -272,10 +274,20 @@ module qos_monitor
     end else begin
       complete_windows = conflict_cycles_q / ctrl_i.priority_cnt_denominator;
       partial_window_cycles = conflict_cycles_q % ctrl_i.priority_cnt_denominator;
-      target_product = longint'(conflict_cycles_q) * ctrl_i.priority_cnt_numerator;
-      minimum_high_cycles = target_product / ctrl_i.priority_cnt_denominator;
-      maximum_high_cycles = (target_product + ctrl_i.priority_cnt_denominator - 1)
-          / ctrl_i.priority_cnt_denominator;
+      if (ctrl_i.priority_cnt_numerator
+          > ctrl_i.priority_cnt_denominator - partial_window_cycles) begin
+        minimum_partial_high_cycles = ctrl_i.priority_cnt_numerator
+            - (ctrl_i.priority_cnt_denominator - partial_window_cycles);
+      end
+      if (ctrl_i.priority_cnt_numerator < partial_window_cycles) begin
+        maximum_partial_high_cycles = ctrl_i.priority_cnt_numerator;
+      end else begin
+        maximum_partial_high_cycles = partial_window_cycles;
+      end
+      minimum_high_cycles = complete_windows * ctrl_i.priority_cnt_numerator
+          + minimum_partial_high_cycles;
+      maximum_high_cycles = complete_windows * ctrl_i.priority_cnt_numerator
+          + maximum_partial_high_cycles;
     end
 
     possible_high_minimum = high_conflict_cycles_q;
