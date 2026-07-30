@@ -2,9 +2,9 @@
  * HCI branch-arbitration QoS monitor
  *
  * Observes the wide-vs-narrow branch selected on each conflict cycle, checks
- * the post-arbiter bank output, and verifies the configured service ratio over
- * all completed conflict windows in aggregate, without constraining service
- * order. It also checks conflict-free pass-through.
+ * the post-arbiter bank output, and verifies the configured service ratio in
+ * every completed conflict window and over the run in aggregate, without
+ * constraining service order. It also checks conflict-free pass-through.
  */
 
 module qos_monitor
@@ -34,6 +34,12 @@ module qos_monitor
   int unsigned high_conflict_cycles_q;
   int unsigned low_conflict_cycles_q;
   int unsigned ambiguous_conflict_cycles_q;
+  int unsigned window_conflict_cycles_q;
+  int unsigned window_high_cycles_q;
+  int unsigned window_low_cycles_q;
+  int unsigned window_ambiguous_cycles_q;
+  int unsigned completed_windows_q;
+  int unsigned ambiguous_windows_q;
   bit failure_seen_q;
   bank_request_t narrow_request[N_BANKS];
   bank_request_t wide_request[N_BANKS];
@@ -115,6 +121,7 @@ module qos_monitor
     bit selection_found;
     bit high_selection_matches;
     bit low_selection_matches;
+    int unsigned target_high_cycles;
     bank_request_t high_request;
     bank_request_t low_request;
     bank_request_t expected_request;
@@ -123,6 +130,12 @@ module qos_monitor
       high_conflict_cycles_q = '0;
       low_conflict_cycles_q = '0;
       ambiguous_conflict_cycles_q = '0;
+      window_conflict_cycles_q = '0;
+      window_high_cycles_q = '0;
+      window_low_cycles_q = '0;
+      window_ambiguous_cycles_q = '0;
+      completed_windows_q = '0;
+      ambiguous_windows_q = '0;
       failure_seen_q = 1'b0;
     end else begin
       if ($isunknown({
@@ -227,10 +240,41 @@ module qos_monitor
         conflict_cycles_q = conflict_cycles_q + 1;
         if (!selection_found) begin
           ambiguous_conflict_cycles_q = ambiguous_conflict_cycles_q + 1;
+          window_ambiguous_cycles_q = window_ambiguous_cycles_q + 1;
         end else if (selected_high) begin
           high_conflict_cycles_q = high_conflict_cycles_q + 1;
+          window_high_cycles_q = window_high_cycles_q + 1;
         end else begin
           low_conflict_cycles_q = low_conflict_cycles_q + 1;
+          window_low_cycles_q = window_low_cycles_q + 1;
+        end
+
+        window_conflict_cycles_q = window_conflict_cycles_q + 1;
+        target_high_cycles = ctrl_i.priority_cnt_numerator == 0
+            ? ctrl_i.priority_cnt_denominator
+            : ctrl_i.priority_cnt_numerator;
+        if (window_conflict_cycles_q == ctrl_i.priority_cnt_denominator) begin
+          if (window_high_cycles_q > target_high_cycles
+              || window_high_cycles_q + window_ambiguous_cycles_q
+                  < target_high_cycles) begin
+            failure_seen_q = 1'b1;
+            $fatal(
+              1,
+              "QoS window mismatch: possible high selections are %0d to %0d; expected exactly %0d in %0d conflicts.",
+              window_high_cycles_q,
+              window_high_cycles_q + window_ambiguous_cycles_q,
+              target_high_cycles,
+              ctrl_i.priority_cnt_denominator
+            );
+          end
+          if (window_ambiguous_cycles_q != 0) begin
+            ambiguous_windows_q = ambiguous_windows_q + 1;
+          end
+          completed_windows_q = completed_windows_q + 1;
+          window_conflict_cycles_q = '0;
+          window_high_cycles_q = '0;
+          window_low_cycles_q = '0;
+          window_ambiguous_cycles_q = '0;
         end
 
       end else begin
@@ -293,6 +337,15 @@ module qos_monitor
     possible_high_minimum = high_conflict_cycles_q;
     possible_high_maximum = high_conflict_cycles_q + ambiguous_conflict_cycles_q;
 
+    if (!failure_seen_q && complete_windows != completed_windows_q) begin
+      failure_seen_q = 1'b1;
+      $error(
+        "QoS window accounting mismatch: calculated=%0d checked=%0d.",
+        complete_windows,
+        completed_windows_q
+      );
+    end
+
     if (!failure_seen_q && complete_windows != 0
         && (possible_high_maximum < minimum_high_cycles
             || possible_high_minimum > maximum_high_cycles)) begin
@@ -308,6 +361,9 @@ module qos_monitor
     end else if (!failure_seen_q && complete_windows != 0
         && (possible_high_minimum < minimum_high_cycles
             || possible_high_maximum > maximum_high_cycles)) begin
+      ratio_inconclusive = 1'b1;
+    end
+    if (!failure_seen_q && ambiguous_windows_q != 0) begin
       ratio_inconclusive = 1'b1;
     end
 
@@ -329,13 +385,13 @@ module qos_monitor
     end else begin
       high_branch = ctrl_i.invert_prio ? "wide" : "narrow";
       $display(
-        "QoS monitor: conflicts=%0d high=%0d low=%0d ambiguous=%0d complete_windows=%0d partial_window=%0d invert_prio=%0d num=%0d den=%0d",
+        "QoS monitor: conflicts=%0d high=%0d low=%0d ambiguous=%0d checked_windows=%0d partial_window=%0d invert_prio=%0d num=%0d den=%0d",
         conflict_cycles_q,
         high_conflict_cycles_q,
         low_conflict_cycles_q,
         ambiguous_conflict_cycles_q,
-        complete_windows,
-        partial_window_cycles,
+        completed_windows_q,
+        window_conflict_cycles_q,
         ctrl_i.invert_prio,
         ctrl_i.priority_cnt_numerator,
         ctrl_i.priority_cnt_denominator

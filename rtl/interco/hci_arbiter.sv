@@ -56,8 +56,8 @@
  *
  */
 
-// Demo fault: uncomment, rebuild, and rerun to select the opposite branch.
-// `define HCI_DEMO_WRONG_BRANCH_SELECTION
+// Demo fault: uncomment, rebuild, and rerun to violate the configured QoS ratio.
+// `define HCI_DEMO_WRONG_QOS_RATIO
  
 module hci_arbiter
   import hci_package::*;
@@ -92,6 +92,7 @@ module hci_arbiter
     bank_conflict = hs_req_in & ls_req_in;
     any_conflict = |bank_conflict;
     hs_req_suppress_d = 1'b0;
+`ifndef HCI_DEMO_WRONG_QOS_RATIO
     if (ctrl_i.priority_cnt_numerator > 0) // Set to 0 to disable this functionality
     begin
       if (priority_cnt_q >= ctrl_i.priority_cnt_numerator &&
@@ -99,6 +100,7 @@ module hci_arbiter
           any_conflict)
         hs_req_suppress_d = 1'b1; // In the low-priority service window, only on real conflicts
     end
+`endif
   end
 
   // Counter of conflict cycles.
@@ -143,13 +145,7 @@ module hci_arbiter
   // Side select
   generate
     for(genvar ii=0; ii<NB_CHAN; ii++) begin: gen_side_select
-`ifdef HCI_DEMO_WRONG_BRANCH_SELECTION
-      assign hs_pass_d[ii] = (in_high[ii].req && in_low[ii].req)
-          ? ~(((~hs_req_suppress_d) & hs_req_in[ii]) ^ switch_channels_d)
-          :  (((~hs_req_suppress_d) & hs_req_in[ii]) ^ switch_channels_d);
-`else
       assign hs_pass_d[ii] = ((~hs_req_suppress_d) & hs_req_in[ii]) ^ switch_channels_d;
-`endif
     end // side_select
   endgenerate
 

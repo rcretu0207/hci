@@ -1,0 +1,11 @@
+{
+  "description": "Random grants, normal priority, 7/8 service ratio",
+  "parameters": {
+    "CLK_PERIOD": 5,
+    "RST_CLK_CYCLES": 10,
+    "RANDOM_GNT": 1,
+    "INVERT_PRIO": 0,
+    "PRIORITY_CNT_NUMERATOR": 7,
+    "PRIORITY_CNT_DENOMINATOR": 8
+  }
+}

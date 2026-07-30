@@ -1,0 +1,83 @@
+{
+  "description": "Reduced one-tile GEMM for random bank-grant functional verification.",
+  "log_masters": [
+    {
+      "id": 0,
+      "description": "Core 0 traffic overlapping the GEMM result transfer",
+      "patterns": [
+        {
+          "mem_access_type": "linear",
+          "job": "core0_after_gemm",
+          "wait_for_jobs": ["gemm_A0"],
+          "traffic_pct": 100,
+          "traffic_read_pct": 50,
+          "region_base_address": "0x03000",
+          "region_size_bytes": 64
+        }
+      ]
+    },
+    { "id": 1, "description": "Core 1 (idle)", "mem_access_type": "idle" },
+    { "id": 2, "description": "Core 2 (idle)", "mem_access_type": "idle" },
+    { "id": 3, "description": "Core 3 (idle)", "mem_access_type": "idle" },
+    { "id": 4, "description": "Core 4 (idle)", "mem_access_type": "idle" },
+    { "id": 5, "description": "Core 5 (idle)", "mem_access_type": "idle" },
+    { "id": 6, "description": "Core 6 (idle)", "mem_access_type": "idle" },
+    { "id": 7, "description": "Core 7 (idle)", "mem_access_type": "idle" },
+    { "id": 8, "description": "External port (idle)", "mem_access_type": "idle" }
+  ],
+  "hwpe_masters": [
+    {
+      "id": 0,
+      "description": "DMA engine",
+      "patterns": [
+        {
+          "mem_access_type": "linear",
+          "job": "dma_load_B",
+          "traffic_pct": 100,
+          "traffic_read_pct": 0,
+          "region_base_address": "0x00000",
+          "region_size_bytes": 64
+        },
+        {
+          "mem_access_type": "linear",
+          "job": "dma_load_A0",
+          "traffic_pct": 100,
+          "traffic_read_pct": 0,
+          "region_base_address": "0x01000",
+          "region_size_bytes": 64
+        },
+        {
+          "mem_access_type": "linear",
+          "job": "dma_store_C0",
+          "wait_for_jobs": ["gemm_A0"],
+          "traffic_pct": 100,
+          "traffic_read_pct": 100,
+          "region_base_address": "0x02000",
+          "region_size_bytes": 64
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "description": "GEMM engine",
+      "patterns": [
+        {
+          "mem_access_type": "matmul_phased",
+          "job": "gemm_A0",
+          "wait_for_jobs": ["dma_load_B", "dma_load_A0"],
+          "traffic_pct": 100,
+          "matrix_m": 2,
+          "matrix_n": 2,
+          "matrix_k": 2,
+          "matrix_elem_bytes": 1,
+          "region_base_address_a": "0x01000",
+          "region_size_bytes_a": 64,
+          "region_base_address_b": "0x00000",
+          "region_size_bytes_b": 64,
+          "region_base_address_c": "0x02000",
+          "region_size_bytes_c": 64
+        }
+      ]
+    }
+  ]
+}

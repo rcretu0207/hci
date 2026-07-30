@@ -1,8 +1,8 @@
 {
-  "description": "Functional verification: HCI with three 2-lane HWPEs",
+  "description": "Hardware configuration parameters for HCI interconnect",
   "parameters": {
-    "N_HWPE": 3,
-    "HWPE_WIDTH_FACT": 2,
+    "N_HWPE": 2,
+    "HWPE_WIDTH_FACT": 16,
     "N_CORE": 8,
     "N_DMA": 0,
     "N_EXT": 1,

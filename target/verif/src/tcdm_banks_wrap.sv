@@ -19,6 +19,9 @@
 // Demo fault: uncomment, rebuild, and rerun to corrupt returned read data.
 //`define HCI_DEMO_CORRUPT_READ_DATA
 
+// Demo fault: uncomment, rebuild, and rerun to corrupt stored write data.
+//`define HCI_DEMO_CORRUPT_WRITE_DATA
+
 module tcdm_banks_wrap #(
   parameter int unsigned BankSize  = 256,         // --> OVERRIDE
   parameter int unsigned NbBanks   = 1,           // --> OVERRIDE
@@ -42,6 +45,7 @@ module tcdm_banks_wrap #(
     // r_id is same as request id -> Don't know if this is needed, but OBI protocol requires it
     logic [IdWidth-1:0] resp_id_d, resp_id_q;
     logic [DataWidth-1:0] bank_rdata;
+    logic [DataWidth-1:0] bank_wdata;
     assign resp_id_d = tcdm_slave[i].id;
     assign tcdm_slave[i].r_id = resp_id_q;
 
@@ -66,6 +70,12 @@ module tcdm_banks_wrap #(
       assign tcdm_slave[i].gnt    =  1'b1;
     end
 
+`ifdef HCI_DEMO_CORRUPT_WRITE_DATA
+    assign bank_wdata = ~tcdm_slave[i].data;
+`else
+    assign bank_wdata = tcdm_slave[i].data;
+`endif
+
     //sram
     tc_sram #(
       .NumWords   (BankSize ), // Number of Words in data array
@@ -82,7 +92,7 @@ module tcdm_banks_wrap #(
       .req_i  (tcdm_slave[i].req                        ), // request
       .we_i   (~tcdm_slave[i].wen                       ), // write enable
       .addr_i (tcdm_slave[i].add[$clog2(BankSize)+2-1:2]), // request address
-      .wdata_i(tcdm_slave[i].data                       ), // write data
+      .wdata_i(bank_wdata                               ), // write data
       .be_i   (tcdm_slave[i].be                         ), // write byte enable
 
       .rdata_o(bank_rdata                               )  // read data

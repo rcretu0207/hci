@@ -2,13 +2,15 @@
  * HCI-only functional scoreboard monitor
  *
  * Tracks architectural memory contents from granted driver transactions in
- * HCI mode and checks that each completed response:
- *  - corresponds to a previously granted transaction;
- *  - matches the oldest pending transaction, with ordering observed through
- *    the returned read payload when responses are otherwise indistinguishable;
- *  - returns the expected read data;
+ * HCI mode and checks that:
+ *  - each response corresponds to a previously granted transaction;
+ *  - each response matches the oldest pending transaction, with ordering
+ *    observed through the returned read payload when responses are otherwise
+ *    indistinguishable;
+ *  - each read returns the expected data;
+ *  - stores every accepted write correctly on the following cycle;
  *  - leaves every TCDM word equal to the final shadow-memory contents;
- *  - never appears spuriously.
+ *  - no response appears spuriously.
  */
 
 module functional_scoreboard_monitor
@@ -66,6 +68,11 @@ module functional_scoreboard_monitor
 
   byte unsigned mem_model [0:MEM_BYTES-1];
   bit failure_seen_q;
+  bit write_check_valid_q[N_BANKS];
+  int unsigned write_check_word_idx_q[N_BANKS];
+  logic [DATA_WIDTH-1:0] write_check_data_q[N_BANKS];
+  int unsigned scheduled_write_checks_q;
+  int unsigned completed_write_checks_q;
 
   function automatic logic hwpe_rsp_expected(
     input int unsigned master_idx_i,
@@ -127,6 +134,67 @@ module functional_scoreboard_monitor
     end
   endtask
 
+  task automatic schedule_write_check(
+    input logic [ADDR_WIDTH-1:0] addr_i
+  );
+    int unsigned base_addr;
+    int unsigned global_word_idx;
+    int unsigned bank_idx;
+    int unsigned bank_word_idx;
+    logic [DATA_WIDTH-1:0] expected_word;
+    begin
+      base_addr = int'(addr_i);
+      if (base_addr % WORD_BYTES != 0 || base_addr + WORD_BYTES > MEM_BYTES) begin
+        failure_seen_q = 1'b1;
+        $fatal(1, "Invalid write-check byte address 0x%0h.", addr_i);
+      end
+
+      global_word_idx = base_addr / WORD_BYTES;
+      bank_idx = global_word_idx % N_BANKS;
+      bank_word_idx = global_word_idx / N_BANKS;
+      if (bank_word_idx >= BANK_WORDS) begin
+        failure_seen_q = 1'b1;
+        $fatal(1, "Write-check bank address out of bounds at byte address 0x%0h.", addr_i);
+      end
+      if (write_check_valid_q[bank_idx]) begin
+        failure_seen_q = 1'b1;
+        $fatal(1, "More than one granted write targeted TCDM bank %0d in one cycle.", bank_idx);
+      end
+
+      for (int byte_idx = 0; byte_idx < WORD_BYTES; byte_idx++) begin
+        expected_word[8*byte_idx +: 8] =
+            mem_model[global_word_idx*WORD_BYTES + byte_idx];
+      end
+      write_check_valid_q[bank_idx] = 1'b1;
+      write_check_word_idx_q[bank_idx] = bank_word_idx;
+      write_check_data_q[bank_idx] = expected_word;
+      scheduled_write_checks_q = scheduled_write_checks_q + 1;
+    end
+  endtask
+
+  task automatic check_pending_write(
+    input int unsigned bank_idx_i
+  );
+    begin
+      if (write_check_valid_q[bank_idx_i]) begin
+        if (tcdm_stored_words_i[bank_idx_i][write_check_word_idx_q[bank_idx_i]]
+            !== write_check_data_q[bank_idx_i]) begin
+          failure_seen_q = 1'b1;
+          $fatal(
+            1,
+            "Write-content mismatch on bank %0d word %0d: expected 0x%0h, got 0x%0h",
+            bank_idx_i,
+            write_check_word_idx_q[bank_idx_i],
+            write_check_data_q[bank_idx_i],
+            tcdm_stored_words_i[bank_idx_i][write_check_word_idx_q[bank_idx_i]]
+          );
+        end
+        write_check_valid_q[bank_idx_i] = 1'b0;
+        completed_write_checks_q = completed_write_checks_q + 1;
+      end
+    end
+  endtask
+
   task automatic apply_hwpe_write(
     input logic [ADDR_WIDTH-1:0]                     addr_i,
     input logic [HWPE_WIDTH_FACT*DATA_WIDTH-1:0]    data_i,
@@ -141,6 +209,7 @@ module functional_scoreboard_monitor
           lane_addr_data.data,
           be_i[lane_idx*WORD_BYTES +: WORD_BYTES]
         );
+        schedule_write_check(lane_addr_data.address);
       end
     end
   endtask
@@ -210,7 +279,20 @@ module functional_scoreboard_monitor
         debug_hwpe_gnt_count_q[ii] = '0;
         debug_hwpe_rsp_count_q[ii] = '0;
       end
+      scheduled_write_checks_q = '0;
+      completed_write_checks_q = '0;
+      for (int bank_idx = 0; bank_idx < N_BANKS; bank_idx++) begin
+        write_check_valid_q[bank_idx] = 1'b0;
+        write_check_word_idx_q[bank_idx] = '0;
+        write_check_data_q[bank_idx] = '0;
+      end
     end else begin
+      // Phase 0: the SRAM state visible now includes writes accepted on the
+      // preceding edge. Check each of those writes before capturing new ones.
+      for (int bank_idx = 0; bank_idx < N_BANKS; bank_idx++) begin
+        check_pending_write(bank_idx);
+      end
+
       // Phase 1: retire responses only from transactions that were already
       // pending before this edge. A new grant cannot justify a response on the
       // same edge.
@@ -302,6 +384,7 @@ module functional_scoreboard_monitor
             log_data[ii],
             log_be[ii]
           );
+          schedule_write_check(log_add[ii]);
         end
       end
 
@@ -320,12 +403,14 @@ module functional_scoreboard_monitor
   final begin
     bit pass;
     int unsigned content_mismatches;
+    int unsigned pending_write_checks;
     logic [DATA_WIDTH-1:0] expected_word;
     int unsigned global_word_idx;
     int unsigned global_byte_idx;
 
     pass = 1'b1;
     content_mismatches = 0;
+    pending_write_checks = 0;
     for (int ii = 0; ii < N_LOG_MASTERS; ii++) begin
       if (expected_log_rsp_q[ii].size() != 0) begin
         $error(
@@ -345,6 +430,22 @@ module functional_scoreboard_monitor
         );
         pass = 1'b0;
       end
+    end
+
+    for (int bank_idx = 0; bank_idx < N_BANKS; bank_idx++) begin
+      if (write_check_valid_q[bank_idx]) begin
+        pending_write_checks++;
+      end
+    end
+    if (pending_write_checks != 0
+        || completed_write_checks_q != scheduled_write_checks_q) begin
+      $error(
+        "Write-check accounting mismatch: scheduled=%0d completed=%0d pending=%0d",
+        scheduled_write_checks_q,
+        completed_write_checks_q,
+        pending_write_checks
+      );
+      pass = 1'b0;
     end
 
     if (N_BANKS * BANK_WORDS * WORD_BYTES != MEM_BYTES) begin
@@ -386,7 +487,8 @@ module functional_scoreboard_monitor
 
     if (pass && !failure_seen_q) begin
       $display(
-        "Functional scoreboard monitor: PASS (responses and %0d stored words)",
+        "Functional scoreboard monitor: PASS (responses, %0d writes, and %0d stored words)",
+        completed_write_checks_q,
         N_BANKS * BANK_WORDS
       );
     end
