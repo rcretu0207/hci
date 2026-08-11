@@ -36,7 +36,6 @@ module qos_monitor
   int unsigned ambiguous_conflict_cycles_q;
   int unsigned window_conflict_cycles_q;
   int unsigned window_high_cycles_q;
-  int unsigned window_low_cycles_q;
   int unsigned window_ambiguous_cycles_q;
   int unsigned completed_windows_q;
   int unsigned ambiguous_windows_q;
@@ -132,7 +131,6 @@ module qos_monitor
       ambiguous_conflict_cycles_q = '0;
       window_conflict_cycles_q = '0;
       window_high_cycles_q = '0;
-      window_low_cycles_q = '0;
       window_ambiguous_cycles_q = '0;
       completed_windows_q = '0;
       ambiguous_windows_q = '0;
@@ -246,7 +244,6 @@ module qos_monitor
           window_high_cycles_q = window_high_cycles_q + 1;
         end else begin
           low_conflict_cycles_q = low_conflict_cycles_q + 1;
-          window_low_cycles_q = window_low_cycles_q + 1;
         end
 
         window_conflict_cycles_q = window_conflict_cycles_q + 1;
@@ -273,7 +270,6 @@ module qos_monitor
           completed_windows_q = completed_windows_q + 1;
           window_conflict_cycles_q = '0;
           window_high_cycles_q = '0;
-          window_low_cycles_q = '0;
           window_ambiguous_cycles_q = '0;
         end
 
@@ -385,7 +381,8 @@ module qos_monitor
     end else begin
       high_branch = ctrl_i.invert_prio ? "wide" : "narrow";
       $display(
-        "QoS monitor: conflicts=%0d high=%0d low=%0d ambiguous=%0d checked_windows=%0d partial_window=%0d invert_prio=%0d num=%0d den=%0d",
+        {"QoS monitor: conflicts=%0d high=%0d low=%0d ambiguous=%0d ",
+         "checked_windows=%0d partial_window=%0d invert_prio=%0d num=%0d den=%0d"},
         conflict_cycles_q,
         high_conflict_cycles_q,
         low_conflict_cycles_q,
