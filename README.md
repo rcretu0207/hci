@@ -8,6 +8,29 @@ The `hci` repository contains the definition of the Heterogeneous Cluster Interc
  - https://github.com/pulp-platform/neureka
  - https://github.com/pulp-platform/redmule
 
+# Functional verification additions
+This branch extends the existing traffic and performance testbench with passive
+correctness checks. The added monitors cover three separate parts of the HCI
+behavior:
+
+- A functional scoreboard keeps a shadow copy of the TCDM and checks read data,
+  byte-enabled writes, response order, and the final memory contents.
+- A response-legality monitor tracks accepted transactions and catches early,
+  unexpected, or undrained responses.
+- A QoS monitor reconstructs narrow-wide conflict windows and checks that the
+  configured arbitration ratio is respected, including the final partial window.
+
+The test set contains 34 configurations across 256- and 512-bit HWPE widths,
+fixed and random bank grants, and GEMM, Transformer, and Conv2d traffic. All
+applicable checks pass on the clean design with no errors or warnings. Four
+separate fault injections were also used to exercise the monitors: corrupted
+read data, corrupted stored write data, premature completion, and an incorrect
+QoS decision. Each fault was detected by its intended check.
+
+The monitor implementations are in `target/verif/src/`. The additional hardware,
+testbench, and workload configurations are under
+`target/verif/exploration/config/` and use the verification flow below.
+
 # Verification flow
 The typical full flow is:
 
